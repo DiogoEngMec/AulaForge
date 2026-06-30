@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from aulaforge.config import AulaForgeConfig, load_config, resolve_config_path
+from aulaforge.config import AulaForgeConfig, LlmConfig, load_config, resolve_config_path
 
 
 def test_load_config_defaults_when_no_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,3 +75,36 @@ def test_resolve_config_path_raises_for_missing_explicit_file(tmp_path: Path) ->
     missing = tmp_path / "nope.yaml"
     with pytest.raises(FileNotFoundError):
         resolve_config_path(missing)
+
+
+def test_load_config_parses_llm_section(tmp_path: Path) -> None:
+    config_file = tmp_path / "cfg.yaml"
+    config_file.write_text(
+        "llm:\n  model: qwen3:7b\n  temperature: 0.5\n  max_retries: 5\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(config_file)
+    assert cfg.llm.model == "qwen3:7b"
+    assert cfg.llm.temperature == 0.5
+    assert cfg.llm.max_retries == 5
+
+
+def test_load_config_defaults_llm_section_when_absent(tmp_path: Path) -> None:
+    config_file = tmp_path / "minimal.yaml"
+    config_file.write_text("project:\n  name: Teste\n", encoding="utf-8")
+    cfg = load_config(config_file)
+    assert cfg.llm.model == "qwen3:30b"
+    assert cfg.llm.temperature == 0.2
+    assert cfg.llm.max_retries == 3
+    assert cfg.llm.base_url == "http://localhost:11434"
+    assert cfg.llm.max_input_chars == 10000
+
+
+def test_llm_config_defaults_are_sensible() -> None:
+    llm = LlmConfig()
+    assert llm.provider == "ollama"
+    assert llm.model == "qwen3:30b"
+    assert llm.temperature == 0.2
+    assert llm.max_retries == 3
+    assert llm.base_url == "http://localhost:11434"
+    assert llm.max_input_chars == 10000

@@ -12,11 +12,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
 from aulaforge.audio import AUDIO_FILENAME, extract_audio
-from aulaforge.config import TranscriptionConfig
+from aulaforge.config import LlmConfig, TranscriptionConfig
 from aulaforge.models import (
     Course,
     Lesson,
@@ -26,6 +27,7 @@ from aulaforge.models import (
     StepLogEntry,
     TranscriptSegment,
 )
+from aulaforge.notes import NOTES_FILENAME, generate_lesson_note
 from aulaforge.transcription import (
     CLEAN_TRANSCRIPT_FILENAME,
     RAW_TRANSCRIPT_FILENAME,
@@ -43,6 +45,7 @@ SOURCE_INFO_FILENAME = "source_info.json"
 PROCESSING_LOG_FILENAME = "processing_log.json"
 FOUNDATION_STEP = "foundation"
 TRANSCRIPTION_STEP = "transcription"
+NOTES_STEP = "notes"
 
 _HASH_CHUNK_SIZE = 1024 * 1024  # 1 MiB, keeps memory flat for multi-GB videos
 
@@ -290,6 +293,112 @@ def process_lesson_transcription(
     append_processing_log(processing_log_path, lesson.slug, entry)
     logger.info("Aula '%s' transcrita.", lesson.slug)
     return segments, entry
+
+
+def needs_notes_processing(
+    lesson: Lesson,
+    notes_input_hash: str,
+    force: bool = False,
+) -> bool:
+    """Decide whether the notes step must (re)run for this lesson.
+
+    Uses `notes_input_hash` (transcript content + model + temperature +
+    max_input_chars + prompt version) so any of those changing triggers
+    regeneration automatically.
+    """
+    if force:
+        return True
+
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    log = read_processing_log(processing_log_path, lesson.slug)
+    if not _step_log_shows_done(log, NOTES_STEP):
+        return True
+
+    latest = log.latest(NOTES_STEP)
+    if latest is None or latest.source_hash != notes_input_hash:
+        return True
+    return not (lesson.output_dir / NOTES_FILENAME).exists()
+
+
+def record_skipped_notes(
+    lesson: Lesson, notes_input_hash: str, started_at: datetime
+) -> StepLogEntry:
+    """Log a notes step that needed no work this run."""
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=NOTES_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message="Nota ja existe e nenhuma entrada mudou.",
+        source_hash=notes_input_hash,
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': etapa notes pulada.", lesson.slug)
+    return entry
+
+
+def record_notes_skipped_no_transcript(
+    lesson: Lesson, started_at: datetime
+) -> StepLogEntry:
+    """Log notes as skipped because no transcript is available yet.
+
+    Not a processing failure — the transcription phase is the prerequisite;
+    records as SKIPPED so the batch exit code remains driven by whatever caused
+    transcription to be absent (e.g. a missing dependency).
+    """
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=NOTES_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message="Transcricao indisponivel — execute a Fase 2 antes.",
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': notes pulada (sem transcricao).", lesson.slug)
+    return entry
+
+
+def process_lesson_notes(
+    lesson: Lesson,
+    transcript_text: str,
+    notes_input_hash: str,
+    cfg_llm: LlmConfig,
+) -> tuple[str, StepLogEntry]:
+    """Generate the lesson note file and record the step outcome.
+
+    The caller must have already decided (via `needs_notes_processing`) that
+    this is necessary, and verified Ollama is available. This function does
+    not check availability itself, by design — checks only happen once per run.
+    Writes atomically: content goes to a .tmp file first, then os.replace().
+    """
+    started_at = datetime.now()
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+
+    note_content = generate_lesson_note(lesson.title, transcript_text, cfg_llm)
+
+    notes_path = lesson.output_dir / NOTES_FILENAME
+    tmp_path = notes_path.with_name(notes_path.name + ".tmp")
+    try:
+        tmp_path.write_text(note_content, encoding="utf-8")
+        os.replace(tmp_path, notes_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    entry = StepLogEntry(
+        step=NOTES_STEP,
+        status=Status.COMPLETED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        source_hash=notes_input_hash,
+    )
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': nota gerada em '%s'.", lesson.slug, notes_path.name)
+    return note_content, entry
 
 
 def write_batch_summary(course: Course, entries: dict[str, dict[str, StepLogEntry]]) -> None:

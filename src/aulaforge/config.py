@@ -1,7 +1,7 @@
 """Configuration loading for AulaForge.
 
 Only the sections used by phases implemented so far (`project`, `processing`,
-`transcription`) are modeled. Other sections (ocr, llm, notion, outputs)
+`transcription`, `llm`) are modeled. Other sections (ocr, notion, outputs)
 belong to later phases and are accepted-but-ignored so a real, full config
 file can already be loaded without validation errors.
 """
@@ -43,12 +43,22 @@ class TranscriptionConfig(BaseModel):
     send_raw_to_notion: bool = False
 
 
+class LlmConfig(BaseModel):
+    provider: str = "ollama"
+    model: str = "qwen3:30b"
+    temperature: float = 0.2
+    max_retries: int = 3
+    base_url: str = "http://localhost:11434"
+    max_input_chars: int = 10000
+
+
 class AulaForgeConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AULAFORGE_", extra="ignore")
 
     project: ProjectConfig = ProjectConfig()
     processing: ProcessingConfig = ProcessingConfig()
     transcription: TranscriptionConfig = TranscriptionConfig()
+    llm: LlmConfig = LlmConfig()
 
 
 def resolve_config_path(config_path: Path | None) -> Path | None:

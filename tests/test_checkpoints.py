@@ -9,21 +9,26 @@ from pathlib import Path
 import pytest
 
 from aulaforge.checkpoints import (
+    NOTES_STEP,
     PROCESSING_LOG_FILENAME,
     SOURCE_INFO_FILENAME,
     TRANSCRIPTION_STEP,
     compute_sha256,
     needs_foundation_processing,
+    needs_notes_processing,
     needs_transcription_processing,
     process_lesson_foundation,
+    process_lesson_notes,
     process_lesson_transcription,
     read_processing_log,
     record_failed_foundation,
     record_failed_step,
+    record_notes_skipped_no_transcript,
+    record_skipped_notes,
     record_skipped_transcription,
     write_batch_summary,
 )
-from aulaforge.config import TranscriptionConfig
+from aulaforge.config import LlmConfig, TranscriptionConfig
 from aulaforge.discovery import discover_course
 from aulaforge.models import Status
 
@@ -336,3 +341,174 @@ def test_record_failed_step_is_reused_by_record_failed_foundation(
     assert entry.step == TRANSCRIPTION_STEP
     assert entry.status == Status.FAILED
     assert entry.message == "oops"
+
+
+# ---------------------------------------------------------------------------
+# Notes step (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def transcribed_lesson(
+    course_dir: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[object, object]:
+    """Return (lesson, video_hash) after running foundation + transcription."""
+    monkeypatch.setattr("aulaforge.checkpoints.extract_audio", _fake_extract_audio)
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    info, _ = process_lesson_foundation(lesson)
+    model = FakeWhisperModel([{"start": 0.0, "end": 5.0, "text": "ola mundo"}])
+    process_lesson_transcription(
+        lesson, model, info.hash, _transcription_config(), chunk_minutes=15, language_hint=None
+    )
+    return lesson, info.hash
+
+
+def test_needs_notes_processing_true_when_never_run(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    assert needs_notes_processing(lesson, "any-hash") is True
+
+
+def test_needs_notes_processing_false_after_completed(
+    transcribed_lesson: tuple[object, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aulaforge.checkpoints as chk_module
+
+    lesson, _ = transcribed_lesson
+    monkeypatch.setattr(chk_module, "generate_lesson_note", lambda t, txt, cfg: "# nota")
+    cfg_llm = LlmConfig()
+    transcript = (lesson.output_dir / "03_TRANSCRICAO_LIMPA.md").read_text(encoding="utf-8")  # type: ignore[union-attr]
+    from aulaforge.notes import compute_notes_input_hash
+
+    h = compute_notes_input_hash(transcript, cfg_llm)
+    process_lesson_notes(lesson, transcript, h, cfg_llm)  # type: ignore[arg-type]
+    assert needs_notes_processing(lesson, h) is False  # type: ignore[arg-type]
+
+
+def test_needs_notes_processing_true_when_hash_changed(
+    transcribed_lesson: tuple[object, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aulaforge.checkpoints as chk_module
+
+    lesson, _ = transcribed_lesson
+    monkeypatch.setattr(chk_module, "generate_lesson_note", lambda t, txt, cfg: "# nota")
+    cfg_llm = LlmConfig()
+    transcript = (lesson.output_dir / "03_TRANSCRICAO_LIMPA.md").read_text(encoding="utf-8")  # type: ignore[union-attr]
+    from aulaforge.notes import compute_notes_input_hash
+
+    h = compute_notes_input_hash(transcript, cfg_llm)
+    process_lesson_notes(lesson, transcript, h, cfg_llm)  # type: ignore[arg-type]
+    assert needs_notes_processing(lesson, "different-hash") is True  # type: ignore[arg-type]
+
+
+def test_needs_notes_processing_true_when_file_deleted(
+    transcribed_lesson: tuple[object, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aulaforge.checkpoints as chk_module
+    from aulaforge.checkpoints import NOTES_FILENAME  # re-exported via notes import
+
+    lesson, _ = transcribed_lesson
+    monkeypatch.setattr(chk_module, "generate_lesson_note", lambda t, txt, cfg: "# nota")
+    cfg_llm = LlmConfig()
+    transcript = (lesson.output_dir / "03_TRANSCRICAO_LIMPA.md").read_text(encoding="utf-8")  # type: ignore[union-attr]
+    from aulaforge.notes import compute_notes_input_hash
+
+    h = compute_notes_input_hash(transcript, cfg_llm)
+    process_lesson_notes(lesson, transcript, h, cfg_llm)  # type: ignore[arg-type]
+    (lesson.output_dir / NOTES_FILENAME).unlink()  # type: ignore[union-attr]
+    assert needs_notes_processing(lesson, h) is True  # type: ignore[arg-type]
+
+
+def test_needs_notes_processing_respects_force(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    assert needs_notes_processing(lesson, "any-hash", force=True) is True
+
+
+def test_record_skipped_notes_logs_without_running_anything(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+
+    entry = record_skipped_notes(lesson, "test-hash", datetime.now())
+
+    assert entry.status == Status.SKIPPED_UNCHANGED
+    assert entry.source_hash == "test-hash"
+    assert not (lesson.output_dir / "09_ANOTACAO_NOTION.md").exists()
+
+    log = read_processing_log(lesson.output_dir / PROCESSING_LOG_FILENAME, lesson.slug)
+    latest = log.latest(NOTES_STEP)
+    assert latest is not None
+    assert latest.status == Status.SKIPPED_UNCHANGED
+
+
+def test_record_notes_skipped_no_transcript_uses_skipped_status(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+
+    entry = record_notes_skipped_no_transcript(lesson, datetime.now())
+
+    assert entry.status == Status.SKIPPED_UNCHANGED
+    assert entry.source_hash is None
+    assert "Fase 2" in (entry.message or "")
+
+
+def test_process_lesson_notes_writes_file_and_logs_completed(
+    transcribed_lesson: tuple[object, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aulaforge.checkpoints as chk_module
+
+    lesson, _ = transcribed_lesson
+    monkeypatch.setattr(chk_module, "generate_lesson_note", lambda t, txt, cfg: "# Nota Fake")
+    cfg_llm = LlmConfig()
+    transcript = (lesson.output_dir / "03_TRANSCRICAO_LIMPA.md").read_text(encoding="utf-8")  # type: ignore[union-attr]
+    from aulaforge.notes import compute_notes_input_hash
+
+    h = compute_notes_input_hash(transcript, cfg_llm)
+
+    content, entry = process_lesson_notes(lesson, transcript, h, cfg_llm)  # type: ignore[arg-type]
+
+    assert entry.status == Status.COMPLETED
+    assert entry.source_hash == h
+    assert content == "# Nota Fake"
+    notes_path = lesson.output_dir / "09_ANOTACAO_NOTION.md"  # type: ignore[union-attr]
+    assert notes_path.exists()
+    assert notes_path.read_text(encoding="utf-8") == "# Nota Fake"
+
+    log = read_processing_log(
+        lesson.output_dir / PROCESSING_LOG_FILENAME, lesson.slug  # type: ignore[union-attr]
+    )
+    assert log.latest(NOTES_STEP) is not None
+    assert log.latest(NOTES_STEP).status == Status.COMPLETED  # type: ignore[union-attr]
+
+
+def test_write_batch_summary_renders_notes_column(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    _, foundation_entry = process_lesson_foundation(lesson)
+    notes_entry = record_skipped_notes(lesson, "hash", datetime.now())
+
+    write_batch_summary(
+        course,
+        {lesson.slug: {"foundation": foundation_entry, NOTES_STEP: notes_entry}},
+    )
+
+    report = (course.output_path / "batch_report.md").read_text(encoding="utf-8")
+    assert "Notes" in report
+    assert "skipped_unchanged" in report

@@ -1,4 +1,4 @@
-"""AulaForge command-line interface (Fase 1: foundation; Fase 2: transcricao)."""
+"""AulaForge CLI (Fase 1: foundation; Fase 2: transcricao; Fase 3: notes)."""
 
 from __future__ import annotations
 
@@ -10,12 +10,17 @@ from rich.console import Console
 
 from aulaforge.checkpoints import (
     FOUNDATION_STEP,
+    NOTES_STEP,
     TRANSCRIPTION_STEP,
+    needs_notes_processing,
     needs_transcription_processing,
     process_lesson_foundation,
+    process_lesson_notes,
     process_lesson_transcription,
     record_failed_foundation,
     record_failed_step,
+    record_notes_skipped_no_transcript,
+    record_skipped_notes,
     record_skipped_transcription,
     write_batch_summary,
 )
@@ -23,6 +28,8 @@ from aulaforge.config import load_config
 from aulaforge.discovery import discover_course
 from aulaforge.logging_setup import ensure_utf8_console, setup_logging
 from aulaforge.models import Status, StepLogEntry
+from aulaforge.notes import compute_notes_input_hash, get_transcript_for_notes
+from aulaforge.ollama_client import check_ollama_dependencies
 from aulaforge.transcription import (
     check_transcription_dependencies,
     load_whisper_model,
@@ -64,7 +71,7 @@ _CONFIG_OPTION = typer.Option(
 _FORCE_OPTION = typer.Option(
     False,
     "--force",
-    help="Reprocessa foundation e transcricao mesmo se o video nao mudou.",
+    help="Reprocessa todas as etapas mesmo se o video e as entradas nao mudaram.",
 )
 
 
@@ -74,11 +81,11 @@ def process_course(
     config: Path | None = _CONFIG_OPTION,
     force: bool = _FORCE_OPTION,
 ) -> None:
-    """Descobre, ordena, indexa e transcreve as aulas de um curso.
+    """Descobre, ordena, indexa, transcreve e anota as aulas de um curso.
 
     Exit codes: 0 = OK; 1 = alguma etapa falhou por motivo de processamento;
-    2 = nenhuma falha de processamento, mas ffmpeg/whisper estao ausentes e
-    pelo menos uma aula precisava de transcricao.
+    2 = nenhuma falha de processamento, mas uma dependencia local esta ausente
+    (ffmpeg, whisper, Ollama) e pelo menos uma aula precisava daquela etapa.
     """
     try:
         cfg = load_config(config)
@@ -99,10 +106,11 @@ def process_course(
     effective_force = force or not cfg.processing.skip_if_unchanged
     language_hint = whisper_language_hint(cfg.project.language)
 
-    # Dependency check and model load are both lazy: they only happen once,
-    # the first time a lesson actually needs transcription. A course where
-    # every lesson is already up to date never touches ffmpeg/whisper at all.
+    # Dependency checks and model load are all lazy: they only happen once,
+    # the first time a lesson actually needs that step. A fully up-to-date
+    # course never touches ffmpeg/whisper/Ollama at all.
     dependency_errors: list[str] | None = None
+    ollama_errors: list[str] | None = None
     model = None
 
     entries: dict[str, dict[str, StepLogEntry]] = {}
@@ -180,6 +188,67 @@ def process_course(
                         entries[lesson.slug] = lesson_entries
                         write_batch_summary(course, entries)
                         raise
+
+        # --- Phase 3: Notes ---
+        notes_started_at = datetime.now()
+        transcript_text = get_transcript_for_notes(lesson)
+
+        if transcript_text is None:
+            # Transcription prerequisite is absent — not a notes processing
+            # failure; the transcription step already explains why.
+            lesson_entries[NOTES_STEP] = record_notes_skipped_no_transcript(
+                lesson, notes_started_at
+            )
+        else:
+            notes_hash = compute_notes_input_hash(transcript_text, cfg.llm)
+            try:
+                needs_notes = needs_notes_processing(
+                    lesson, notes_hash, force=effective_force
+                )
+            except Exception as exc:
+                lesson_entries[NOTES_STEP] = record_failed_step(
+                    lesson, NOTES_STEP, notes_started_at, exc
+                )
+                entries[lesson.slug] = lesson_entries
+                had_processing_failure = True
+                if not cfg.processing.continue_on_error:
+                    write_batch_summary(course, entries)
+                    raise
+                continue
+
+            if not needs_notes:
+                lesson_entries[NOTES_STEP] = record_skipped_notes(
+                    lesson, notes_hash, notes_started_at
+                )
+            else:
+                if ollama_errors is None:
+                    ollama_errors = check_ollama_dependencies(
+                        cfg.llm.base_url, cfg.llm.model
+                    )
+
+                if ollama_errors:
+                    lesson_entries[NOTES_STEP] = record_failed_step(
+                        lesson,
+                        NOTES_STEP,
+                        notes_started_at,
+                        RuntimeError("; ".join(ollama_errors)),
+                    )
+                    had_dependency_failure = True
+                else:
+                    try:
+                        _, notes_entry = process_lesson_notes(
+                            lesson, transcript_text, notes_hash, cfg.llm
+                        )
+                        lesson_entries[NOTES_STEP] = notes_entry
+                    except Exception as exc:
+                        lesson_entries[NOTES_STEP] = record_failed_step(
+                            lesson, NOTES_STEP, notes_started_at, exc
+                        )
+                        had_processing_failure = True
+                        if not cfg.processing.continue_on_error:
+                            entries[lesson.slug] = lesson_entries
+                            write_batch_summary(course, entries)
+                            raise
 
         entries[lesson.slug] = lesson_entries
 

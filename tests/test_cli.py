@@ -54,6 +54,28 @@ def mock_transcription_success(monkeypatch: pytest.MonkeyPatch) -> LoadModelSpy:
     return spy
 
 
+@pytest.fixture
+def mock_notes_success(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_transcription_success: LoadModelSpy,
+) -> LoadModelSpy:
+    """Extend mock_transcription_success so notes generation also works without Ollama.
+
+    Mocks the Ollama dependency check (returns no errors) and patches
+    `generate_lesson_note` in the checkpoints module to return a canned string.
+    The real `process_lesson_notes` still runs, so files are written and the
+    processing_log is updated — skip logic works correctly on subsequent runs.
+    """
+    monkeypatch.setattr(
+        cli_module, "check_ollama_dependencies", lambda base_url, model: []
+    )
+    monkeypatch.setattr(
+        "aulaforge.checkpoints.generate_lesson_note",
+        lambda title, text, cfg_llm: "# nota fake",
+    )
+    return mock_transcription_success
+
+
 def test_process_course_exits_cleanly_when_no_videos_found(
     tmp_path: Path, output_root: Path
 ) -> None:
@@ -85,7 +107,7 @@ def test_process_course_runs_end_to_end(
     course_dir: Path,
     output_root: Path,
     tmp_path: Path,
-    mock_transcription_success: LoadModelSpy,
+    mock_notes_success: LoadModelSpy,
 ) -> None:
     config_file = _write_config(tmp_path, output_root)
 
@@ -105,20 +127,21 @@ def test_process_course_runs_end_to_end(
         assert (lesson_dir / "01_TRANSCRICAO_BRUTA.txt").exists()
         assert (lesson_dir / "02_TRANSCRICAO_COM_TIMESTAMPS.json").exists()
         assert (lesson_dir / "03_TRANSCRICAO_LIMPA.md").exists()
+        assert (lesson_dir / "09_ANOTACAO_NOTION.md").exists()
 
 
 def test_process_course_loads_whisper_model_only_once_per_run(
     course_dir: Path,
     output_root: Path,
     tmp_path: Path,
-    mock_transcription_success: LoadModelSpy,
+    mock_notes_success: LoadModelSpy,
 ) -> None:
     config_file = _write_config(tmp_path, output_root)
 
     result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
 
     assert result.exit_code == 0, result.output
-    assert mock_transcription_success.call_count == 1, "modelo deve ser carregado 1x, nao por aula"
+    assert mock_notes_success.call_count == 1, "modelo deve ser carregado 1x, nao por aula"
 
 
 def test_process_course_continues_after_one_lesson_fails(
@@ -126,7 +149,7 @@ def test_process_course_continues_after_one_lesson_fails(
     output_root: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    mock_transcription_success: LoadModelSpy,
+    mock_notes_success: LoadModelSpy,
 ) -> None:
     config_file = _write_config(tmp_path, output_root)
     original = cli_module.process_lesson_foundation
@@ -152,18 +175,18 @@ def test_process_course_second_run_skips_unchanged(
     course_dir: Path,
     output_root: Path,
     tmp_path: Path,
-    mock_transcription_success: LoadModelSpy,
+    mock_notes_success: LoadModelSpy,
 ) -> None:
     config_file = _write_config(tmp_path, output_root)
 
     runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
-    calls_after_first_run = mock_transcription_success.call_count
+    calls_after_first_run = mock_notes_success.call_count
     result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
 
     assert result.exit_code == 0, result.output
     assert "pulada" in result.output
-    # Foundation and transcription were both already done; no model load needed again.
-    assert mock_transcription_success.call_count == calls_after_first_run
+    # Foundation, transcription and notes were all done; no model load needed again.
+    assert mock_notes_success.call_count == calls_after_first_run
 
 
 def test_process_course_reports_dependency_missing_with_distinct_exit_code(
@@ -188,7 +211,35 @@ def test_process_course_reports_dependency_missing_with_distinct_exit_code(
         assert not (lesson_dir / "audio.mp3").exists()
 
 
-def test_process_course_skips_dependency_check_when_nothing_needs_transcription(
+# ---------------------------------------------------------------------------
+# Phase 3 — Notes
+# ---------------------------------------------------------------------------
+
+
+def test_process_course_second_run_skips_notes_without_calling_ollama(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    config_file = _write_config(tmp_path, output_root)
+
+    # First run: notes generated for all lessons.
+    runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    # Second run: notes are current; Ollama must never be checked.
+    def boom(base_url: str, model: str) -> list[str]:
+        raise AssertionError("check_ollama_dependencies nao deveria ser chamado")
+
+    monkeypatch.setattr(cli_module, "check_ollama_dependencies", boom)
+    result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    assert result.exit_code == 0, result.output
+    assert "pulada" in result.output
+
+
+def test_process_course_ollama_missing_reports_dep_exit_code(
     course_dir: Path,
     output_root: Path,
     tmp_path: Path,
@@ -196,16 +247,64 @@ def test_process_course_skips_dependency_check_when_nothing_needs_transcription(
     mock_transcription_success: LoadModelSpy,
 ) -> None:
     config_file = _write_config(tmp_path, output_root)
+    monkeypatch.setattr(
+        cli_module,
+        "check_ollama_dependencies",
+        lambda base_url, model: ["Ollama nao esta rodando (simulado)"],
+    )
 
-    # First run: everything gets transcribed (mocked happy path).
+    result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    assert result.exit_code == DEPENDENCY_MISSING_EXIT_CODE
+    # Foundation and transcription must still complete despite Ollama being absent.
+    course_output = output_root / course_dir.name
+    for lesson_dir in [p for p in course_output.iterdir() if p.is_dir()]:
+        assert (lesson_dir / "source_info.json").exists()
+        assert (lesson_dir / "audio.mp3").exists()
+        assert not (lesson_dir / "09_ANOTACAO_NOTION.md").exists()
+
+
+def test_process_course_notes_skipped_when_transcription_dep_missing(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When transcription dep is missing, notes should be SKIPPED (not FAILED),
+    so that the overall exit code is driven by the transcription dep failure."""
+    config_file = _write_config(tmp_path, output_root)
+    monkeypatch.setattr(
+        cli_module,
+        "check_transcription_dependencies",
+        lambda: ["ffmpeg simulado ausente"],
+    )
+
+    result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    assert result.exit_code == DEPENDENCY_MISSING_EXIT_CODE
+
+
+def test_process_course_skips_dependency_check_when_nothing_needs_transcription(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    config_file = _write_config(tmp_path, output_root)
+
+    # First run: all steps complete via mocked happy path.
     runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
 
-    # Second run: nothing should need transcription anymore, so the dependency
-    # check must never even be called -- prove it by making it explode if called.
-    def boom() -> list[str]:
+    # Second run: nothing has changed, so NEITHER dependency check should run.
+    def boom_transcription() -> list[str]:
         raise AssertionError("check_transcription_dependencies nao deveria ser chamado")
 
-    monkeypatch.setattr(cli_module, "check_transcription_dependencies", boom)
+    def boom_ollama(base_url: str, model: str) -> list[str]:
+        raise AssertionError("check_ollama_dependencies nao deveria ser chamado")
+
+    monkeypatch.setattr(cli_module, "check_transcription_dependencies", boom_transcription)
+    monkeypatch.setattr(cli_module, "check_ollama_dependencies", boom_ollama)
 
     result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
 

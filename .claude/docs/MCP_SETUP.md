@@ -1,97 +1,19 @@
-# MCP Setup — AulaForge + Notion
+# MCP setup — Notion
 
-## Objetivo
+The first phases do not require Notion MCP.
 
-O AulaForge deve enviar automaticamente a página final do curso para o Notion usando MCP.
+Before Phase 4:
 
-## Estratégia
+1. Confirm Notion MCP is available in Claude Code.
+2. Confirm access to the workspace/database.
+3. Create or identify the database `Aulas Processadas`.
+4. Never store tokens in committed files.
+5. Store local secrets in `.claude/settings.local.json` or environment variables.
 
-A integração com Notion deve ficar isolada em um módulo próprio:
+Notion behavior:
 
-```text
-aulaforge/notion/
-  publisher.py
-  blocks.py
-  page_finder.py
-  schemas.py
-```
-
-Assim, se o MCP ou a forma de chamar o Notion mudar, apenas esse módulo precisa ser ajustado.
-
-## Comportamento esperado
-
-Para cada curso:
-
-1. procurar uma página existente pelo nome do curso;
-2. se existir, atualizar;
-3. se não existir, criar;
-4. inserir/atualizar visão geral;
-5. inserir cada aula como bloco recolhível;
-6. não enviar transcrição bruta;
-7. não enviar screenshots;
-8. enviar códigos detectados com timestamp e aviso de confiança.
-
-## Estrutura Notion desejada
-
-```text
-Página: Curso Django CRM
-
-Visão Geral do Curso
-Mapa das Aulas
-Principais Conceitos
-Projetos Possíveis
-Agentes Sugeridos
-Skills Sugeridas
-Prompts Prontos
-
-▸ Aula 1 — Introdução
-▸ Aula 2 — Models e Banco
-▸ Aula 3 — Kanban
-```
-
-## Database sugerida
-
-Database: `Aulas Processadas`
-
-Propriedades:
-
-- Título
-- Curso
-- Categoria
-- Tema principal
-- Subtemas
-- Duração total
-- Quantidade de aulas
-- Data de processamento
-- Status
-- Caminho local
-- Tem OCR?
-- Tem código detectado?
-- Tem comandos detectados?
-- Modelo LLM
-- Processado por
-
-## Boas práticas
-
-- Criar payload intermediário em `COURSE_NOTION_PAGE.md` antes de publicar.
-- Salvar `notion_payload.json` antes do envio.
-- Registrar o ID da página Notion no `course_state.json`.
-- Evitar duplicar aulas já publicadas.
-- Atualizar blocos por aula usando um identificador persistente sempre que possível.
-
-## Fallback
-
-Se o Notion falhar:
-
-- salvar tudo localmente;
-- gerar `NOTION_UPLOAD_FAILED.md`;
-- registrar erro no `batch_report.md`;
-- continuar o restante do processamento.
-
-## Prompt para Claude Code quando for implementar MCP
-
-Use o arquivo:
-
-```text
-prompts/04_PHASE_4_NOTION_MCP.md
-```
+- Search for an existing course page by course name.
+- If found, update it.
+- If not found, create it.
+- Use one course page containing all lessons.
+- Use Toggle Heading 1 or equivalent for each lesson.

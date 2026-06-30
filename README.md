@@ -1,49 +1,30 @@
-# AulaForge — Pacote inicial de planejamento para Claude Code
+# AulaForge
 
-Este pacote contém os arquivos iniciais para começar o desenvolvimento do **AulaForge** de forma organizada e por fases.
+AulaForge é uma ferramenta local-first para transformar aulas gravadas em vídeo em uma base de conhecimento estruturada.
 
-O AulaForge é uma ferramenta local, executada por comando, para processar vídeos de aulas/cursos e gerar automaticamente:
+O sistema deve processar uma pasta de curso contendo várias aulas, extrair áudio, transcrever com Whisper local, analisar visualmente o vídeo com OCR local, organizar o conteúdo com Ollama (`qwen3:30b`), gerar arquivos Markdown para Claude Code/Codex e criar/atualizar uma página do curso no Notion via MCP.
 
-- áudio extraído;
-- transcrição local com Whisper;
-- transcrição limpa;
-- OCR do que apareceu na tela;
-- códigos detectados;
-- comandos de terminal detectados;
-- merge entre fala e tela;
-- anotação estruturada para Notion;
-- página única do curso no Notion com aulas em blocos recolhíveis;
-- arquivos `.md` para Claude Code e Codex;
-- prompts prontos;
-- ideias de projetos, agentes e skills.
+## Decisões principais
 
-## Como usar este pacote no Claude Code
+- Execução inicial por CLI.
+- Processamento local, sem APIs pagas.
+- Transcrição com Whisper local.
+- Organização com Ollama + `qwen3:30b`.
+- OCR local para detectar código, terminal, slides, navegador, VS Code e documentação.
+- Processamento sequencial para estabilidade.
+- Batch automático sem perguntas manuais.
+- Página única por curso no Notion, com aulas em Toggle Heading 1.
+- Transcrição bruta salva localmente, não enviada ao Notion.
+- Screenshots salvos localmente, não enviados ao Notion.
 
-1. Crie um repositório novo para o AulaForge.
-2. Copie estes arquivos para a raiz do projeto.
-3. Abra o projeto no Claude Code.
-4. Leia primeiro:
-   - `PRD.md`
-   - `CLAUDE.md`
-   - `ARCHITECTURE.md`
-   - `ROADMAP.md`
-5. Use os prompts em `prompts/` fase por fase.
-6. Não peça para a IA construir tudo de uma vez.
+## Como iniciar no Claude Code
 
-## Ordem recomendada de uso
+Leia primeiro:
 
-1. `prompts/00_MASTER_PROMPT_CLAUDE_CODE.md`
-2. `prompts/01_PHASE_1_FOUNDATION.md`
-3. `prompts/02_PHASE_2_TRANSCRIPTION.md`
-4. `prompts/03_PHASE_3_NOTES_LOCAL.md`
-5. `prompts/04_PHASE_4_NOTION_MCP.md`
-6. `prompts/05_PHASE_5_OCR.md`
-7. `prompts/06_PHASE_6_MERGE_AUDIO_VIDEO.md`
-8. `prompts/07_PHASE_7_CLAUDE_CODE_CODEX_OUTPUTS.md`
-9. `prompts/08_PHASE_8_BATCH_RESUME_QA.md`
+```text
+FIRST_PROMPT_CLAUDE_CODE.md
+```
 
-## Regra principal
+Depois cole o prompt no Claude Code.
 
-O projeto deve evoluir por fases pequenas, testáveis e corrigíveis.
-
-Nunca implementar transcrição, OCR, Notion, merge visual e geração de agentes tudo em uma única etapa.
+O Claude deve primeiro ler `.claude/docs/FILE_READING_ORDER.md` e seguir a ordem completa de leitura antes de implementar qualquer código.

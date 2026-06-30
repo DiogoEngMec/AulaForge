@@ -1,31 +1,11 @@
-# Contexto para Codex — {{ lesson_title }}
+# Codex Context — {{lesson_title}}
 
-## Objetivo
+## Tarefa
 
-{{ objective }}
+## Escopo
 
-## Escopo sugerido
-
-{{ scope }}
-
-## Arquivos prováveis
-
-{{ likely_files }}
-
-## Passos de implementação
-
-{{ implementation_steps }}
+## Arquivos a criar/editar
 
 ## Critérios de aceite
 
-{{ acceptance_criteria }}
-
-## Testes sugeridos
-
-{{ tests }}
-
-## Prompt para Codex
-
-```text
-{{ codex_prompt }}
-```
+## Testes esperados

@@ -1,72 +1,20 @@
-# Checklists por fase — AulaForge
+# Phase checklists
 
-## Fase 1
+## Phase 1 acceptance
 
-- [ ] Projeto Python criado
-- [ ] CLI funcionando
-- [ ] Config carregada
-- [ ] Vídeos detectados
-- [ ] Aulas ordenadas
-- [ ] Output criado
-- [ ] Testes básicos
+- [ ] `aulaforge process-course <path>` exists.
+- [ ] Config loads from YAML/defaults.
+- [ ] Course videos are discovered.
+- [ ] Lessons are sorted by number in filename.
+- [ ] Output folders are created.
+- [ ] `source_info.json` is generated.
+- [ ] Unchanged lessons can be skipped.
+- [ ] Logs are generated.
+- [ ] Tests exist for discovery/order/checkpoint.
 
-## Fase 2
+## Phase 2 acceptance
 
-- [ ] FFmpeg detectado
-- [ ] Áudio extraído
-- [ ] Whisper integrado
-- [ ] Transcrição bruta salva
-- [ ] Timestamps salvos
-- [ ] Chunks de 15 minutos gerados
-- [ ] Skip unchanged funcionando
-
-## Fase 3
-
-- [ ] Ollama detectado
-- [ ] Modelo qwen3:30b detectado
-- [ ] Resumo por chunk
-- [ ] Anotação final
-- [ ] Markdown legível
-- [ ] Separação aula/insights
-
-## Fase 4
-
-- [ ] Página Notion criada
-- [ ] Página existente atualizada
-- [ ] Aulas em toggles
-- [ ] Transcrição bruta não enviada
-- [ ] Falha Notion registrada
-
-## Fase 5
-
-- [ ] Frames extraídos
-- [ ] Frames deduplicados
-- [ ] OCR bruto salvo
-- [ ] Códigos detectados
-- [ ] Comandos detectados
-- [ ] Confiança classificada
-
-## Fase 6
-
-- [ ] Merge por timestamp
-- [ ] Códigos inseridos na anotação
-- [ ] Avisos de confiança
-- [ ] Comandos inseridos
-
-## Fase 7
-
-- [ ] Claude Code context
-- [ ] Codex context
-- [ ] Prompts prontos
-- [ ] Agentes sugeridos
-- [ ] Skills sugeridas
-- [ ] Ideias de projetos
-
-## Fase 8
-
-- [ ] Batch report
-- [ ] Logs JSON
-- [ ] Retries
-- [ ] Doctor command
-- [ ] Testes principais
-- [ ] Rodada noturna segura
+- [ ] Audio extraction works.
+- [ ] Whisper local command/client works.
+- [ ] Transcript files are saved.
+- [ ] 15-minute chunks are generated.

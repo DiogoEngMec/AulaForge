@@ -1,27 +1,13 @@
-# Contexto para Claude Code — {{ lesson_title }}
+# Claude Code Context — {{lesson_title}}
 
-## Resumo técnico da aula
+## Contexto da aula
 
-{{ technical_summary }}
+## Objetivo de implementação
 
-## Conteúdo relevante para implementação
+## Arquivos prováveis
 
-{{ implementation_relevant_content }}
+## Agentes úteis
 
-## Arquivos ou estruturas mencionadas
+## Cuidados técnicos
 
-{{ mentioned_files }}
-
-## Possíveis tarefas para Claude Code
-
-{{ claude_tasks }}
-
-## Prompt recomendado
-
-```text
-{{ recommended_claude_prompt }}
-```
-
-## Cuidados
-
-{{ cautions }}
+## Prompt sugerido

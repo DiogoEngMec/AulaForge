@@ -1,37 +1,35 @@
-# Plano de implementação — AulaForge
+# Implementation plan
 
-## Etapa 1 — Base
+Implement AulaForge in small, reviewable phases.
 
-Criar projeto Python, CLI e scanner de cursos.
+## Phase 1
 
-## Etapa 2 — Estado e checkpoints
+Build the CLI foundation and local course/lesson file management only.
 
-Criar hashing, `source_info.json` e skip de aulas já processadas.
+## Phase 2
 
-## Etapa 3 — Áudio e transcrição
+Add audio extraction and transcription.
 
-Integrar FFmpeg e Whisper local.
+## Phase 3
 
-## Etapa 4 — Anotação local
+Add Ollama-based Markdown note generation.
 
-Integrar Ollama `qwen3:30b` para gerar Markdown.
+## Phase 4
 
-## Etapa 5 — Notion
+Add Notion MCP integration.
 
-Publicar página do curso via MCP.
+## Phase 5
 
-## Etapa 6 — OCR
+Add OCR.
 
-Extrair frames e aplicar OCR.
+## Phase 6
 
-## Etapa 7 — Merge áudio + vídeo
+Add audio/video merge.
 
-Combinar fala e tela.
+## Phase 7
 
-## Etapa 8 — Arquivos derivados
+Generate Claude Code and Codex artifacts.
 
-Gerar Claude Code, Codex, prompts, agentes, skills e projetos.
+## Phase 8
 
-## Etapa 9 — Robustez
-
-Batch noturno, retries, logs e QA.
+Harden batch processing, QA and resume behavior.

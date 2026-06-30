@@ -1,44 +1,25 @@
-# Template de página Notion — AulaForge
+# Notion page template
 
-# {{ course_title }}
+# Curso: {{course_name}}
 
 ## Visão Geral do Curso
 
-{{ course_overview }}
-
 ## Mapa das Aulas
-
-{{ lesson_map }}
 
 ## Principais Conceitos
 
-{{ main_concepts }}
-
 ## Projetos Possíveis
-
-{{ project_ideas }}
 
 ## Agentes Sugeridos
 
-{{ agent_ideas }}
-
 ## Skills Sugeridas
-
-{{ skill_ideas }}
 
 ## Prompts Prontos
 
-{{ course_prompts }}
-
 ---
 
-## Aulas
+# Toggle Heading 1: Aula {{lesson_number}} — {{lesson_title}}
 
-### Toggle Heading 1: Aula 1 — {{ lesson_title }}
-
-Dentro do toggle:
-
-```markdown
 ## Resumo Executivo
 
 ## Ideia Central
@@ -64,11 +45,3 @@ Dentro do toggle:
 ## Prompts Prontos
 
 ## Arquivos Gerados Localmente
-```
-
-## Observações
-
-- A transcrição bruta não deve ir para o Notion.
-- Screenshots não devem ir para o Notion.
-- Códigos detectados via OCR devem ter aviso de confiança quando necessário.
-- Conteúdo da aula e insights da IA devem ficar separados.

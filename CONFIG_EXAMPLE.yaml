@@ -1,0 +1,59 @@
+project:
+  name: "AulaForge"
+  output_dir: "./output"
+  language: "pt-BR"
+  keep_technical_terms_in_english: true
+
+processing:
+  mode: "documentation_project"
+  batch: true
+  sequential: true
+  continue_on_error: true
+  retry_attempts: 3
+  chunk_minutes: 15
+  skip_if_unchanged: true
+  auto_confirm: true
+
+transcription:
+  engine: "whisper-local"
+  model: "medium"
+  save_raw: true
+  save_timestamps: true
+  send_raw_to_notion: false
+
+ocr:
+  enabled: true
+  engine: "local"
+  frame_interval_seconds: 5
+  save_screenshots_local: true
+  send_screenshots_to_notion: false
+  show_low_confidence_code_in_notion: true
+  detect_code: true
+  detect_terminal: true
+  detect_screen_type: true
+
+llm:
+  provider: "ollama"
+  model: "qwen3:30b"
+  temperature: 0.2
+  max_retries: 3
+
+notion:
+  enabled: true
+  auto_send: true
+  mode: "course_page"
+  database_name: "Aulas Processadas"
+  page_per_course: true
+  update_existing_page: true
+  lesson_blocks_as_toggle_h1: true
+  send_raw_transcript: false
+  send_screenshots: false
+
+outputs:
+  generate_course_overview: true
+  generate_claude_code_context: true
+  generate_codex_context: true
+  generate_prompts: true
+  generate_agent_ideas: true
+  generate_skill_ideas: true
+  generate_project_ideas: true

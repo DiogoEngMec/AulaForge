@@ -1,0 +1,21 @@
+{
+  "project": "AulaForge",
+  "default_model_notes": "Use the user's active Claude Code model. Keep development phased and local-first.",
+  "permissions": {
+    "allow_shell_for_project_commands": true,
+    "require_confirmation_for_destructive_commands": true
+  },
+  "conventions": {
+    "python_version": "3.11+",
+    "package_manager": "uv_or_pip",
+    "test_runner": "pytest",
+    "linter": "ruff",
+    "type_checker": "mypy"
+  },
+  "local_first": {
+    "transcription": "whisper-local",
+    "llm": "ollama:qwen3:30b",
+    "ocr": "local",
+    "no_paid_apis_without_approval": true
+  }
+}

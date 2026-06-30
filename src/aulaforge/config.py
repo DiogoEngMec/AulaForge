@@ -1,10 +1,9 @@
 """Configuration loading for AulaForge.
 
-Only the `project` and `processing` sections of CONFIG_EXAMPLE.yaml are
-modeled in Phase 1 (the only sections this phase uses). Other sections
-(transcription, ocr, llm, notion, outputs) belong to later phases and are
-accepted-but-ignored so a real, full config file can already be loaded
-without validation errors.
+Only the sections used by phases implemented so far (`project`, `processing`,
+`transcription`) are modeled. Other sections (ocr, llm, notion, outputs)
+belong to later phases and are accepted-but-ignored so a real, full config
+file can already be loaded without validation errors.
 """
 
 from __future__ import annotations
@@ -36,11 +35,20 @@ class ProcessingConfig(BaseModel):
     auto_confirm: bool = True
 
 
+class TranscriptionConfig(BaseModel):
+    engine: str = "whisper-local"
+    model: str = "medium"
+    save_raw: bool = True
+    save_timestamps: bool = True
+    send_raw_to_notion: bool = False
+
+
 class AulaForgeConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AULAFORGE_", extra="ignore")
 
     project: ProjectConfig = ProjectConfig()
     processing: ProcessingConfig = ProcessingConfig()
+    transcription: TranscriptionConfig = TranscriptionConfig()
 
 
 def resolve_config_path(config_path: Path | None) -> Path | None:

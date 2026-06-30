@@ -2,9 +2,9 @@
 
 `source_info.json` represents the video's fingerprint and the state of the
 foundation/indexing step only. `processing_log.json` accumulates one entry
-per pipeline step (foundation now; transcription, notes, etc. in later
+per pipeline step (foundation, transcription now; notes, OCR, etc. in later
 phases) so a lesson is never treated as "fully processed by the whole
-pipeline" just because Phase 1 indexed it.
+pipeline" just because one step ran.
 """
 
 from __future__ import annotations
@@ -15,13 +15,34 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from aulaforge.models import Course, Lesson, ProcessingLog, SourceInfo, Status, StepLogEntry
+from aulaforge.audio import AUDIO_FILENAME, extract_audio
+from aulaforge.config import TranscriptionConfig
+from aulaforge.models import (
+    Course,
+    Lesson,
+    ProcessingLog,
+    SourceInfo,
+    Status,
+    StepLogEntry,
+    TranscriptSegment,
+)
+from aulaforge.transcription import (
+    CLEAN_TRANSCRIPT_FILENAME,
+    RAW_TRANSCRIPT_FILENAME,
+    TIMESTAMPED_TRANSCRIPT_FILENAME,
+    WhisperModel,
+    transcribe_audio,
+    write_clean_transcript,
+    write_raw_transcript,
+    write_timestamped_transcript,
+)
 
 logger = logging.getLogger("aulaforge.checkpoints")
 
 SOURCE_INFO_FILENAME = "source_info.json"
 PROCESSING_LOG_FILENAME = "processing_log.json"
 FOUNDATION_STEP = "foundation"
+TRANSCRIPTION_STEP = "transcription"
 
 _HASH_CHUNK_SIZE = 1024 * 1024  # 1 MiB, keeps memory flat for multi-GB videos
 
@@ -70,17 +91,22 @@ def _quick_fingerprint_matches(video_path: Path, existing: SourceInfo) -> bool:
     )
 
 
+def _step_log_shows_done(log: ProcessingLog, step: str) -> bool:
+    """True if `step`'s latest entry in `log` is completed or skipped_unchanged."""
+    latest = log.latest(step)
+    return latest is not None and latest.status in (
+        Status.COMPLETED,
+        Status.SKIPPED_UNCHANGED,
+    )
+
+
 def _has_valid_foundation_record(lesson: Lesson, existing: SourceInfo) -> bool:
     """True if `existing` still matches the video and foundation was logged as done."""
     if not _quick_fingerprint_matches(lesson.video_path, existing):
         return False
     processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
     log = read_processing_log(processing_log_path, lesson.slug)
-    latest = log.latest(FOUNDATION_STEP)
-    return latest is not None and latest.status in (
-        Status.COMPLETED,
-        Status.SKIPPED_UNCHANGED,
-    )
+    return _step_log_shows_done(log, FOUNDATION_STEP)
 
 
 def needs_foundation_processing(lesson: Lesson, force: bool = False) -> bool:
@@ -147,13 +173,13 @@ def process_lesson_foundation(
     return info, entry
 
 
-def record_failed_foundation(
-    lesson: Lesson, started_at: datetime, error: Exception
+def record_failed_step(
+    lesson: Lesson, step: str, started_at: datetime, error: Exception
 ) -> StepLogEntry:
-    """Log a foundation-step failure without touching source_info.json."""
+    """Log a step failure without touching source_info.json."""
     processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
     entry = StepLogEntry(
-        step=FOUNDATION_STEP,
+        step=step,
         status=Status.FAILED,
         started_at=started_at,
         finished_at=datetime.now(),
@@ -161,32 +187,145 @@ def record_failed_foundation(
     )
     lesson.output_dir.mkdir(parents=True, exist_ok=True)
     append_processing_log(processing_log_path, lesson.slug, entry)
-    logger.error("Falha na etapa foundation da aula '%s': %s", lesson.slug, error)
+    logger.error("Falha na etapa %s da aula '%s': %s", step, lesson.slug, error)
     return entry
 
 
-def write_batch_summary(course: Course, entries: dict[str, StepLogEntry]) -> None:
-    """Write course-level `batch_log.json` and `batch_report.md` for this run."""
+def record_failed_foundation(
+    lesson: Lesson, started_at: datetime, error: Exception
+) -> StepLogEntry:
+    """Log a foundation-step failure without touching source_info.json."""
+    return record_failed_step(lesson, FOUNDATION_STEP, started_at, error)
+
+
+def needs_transcription_processing(
+    lesson: Lesson,
+    video_hash: str,
+    cfg: TranscriptionConfig,
+    force: bool = False,
+) -> bool:
+    """Decide whether the transcription step must (re)run for this lesson.
+
+    Checks, in order: --force; whether the last transcription step is
+    logged as done; whether that entry's source_hash still matches the
+    current video fingerprint; and whether every file the *current* config
+    says should exist actually exists on disk (covers the user flipping
+    save_raw/save_timestamps on, or a file being deleted between runs).
+    """
+    if force:
+        return True
+
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    log = read_processing_log(processing_log_path, lesson.slug)
+    if not _step_log_shows_done(log, TRANSCRIPTION_STEP):
+        return True
+
+    latest = log.latest(TRANSCRIPTION_STEP)
+    if latest is None or latest.source_hash != video_hash:
+        return True
+
+    if not (lesson.output_dir / AUDIO_FILENAME).exists():
+        return True
+    if cfg.save_raw and not (lesson.output_dir / RAW_TRANSCRIPT_FILENAME).exists():
+        return True
+    if cfg.save_timestamps and not (lesson.output_dir / TIMESTAMPED_TRANSCRIPT_FILENAME).exists():
+        return True
+    return not (lesson.output_dir / CLEAN_TRANSCRIPT_FILENAME).exists()
+
+
+def record_skipped_transcription(
+    lesson: Lesson, video_hash: str, started_at: datetime
+) -> StepLogEntry:
+    """Log a transcription step that needed no work this run."""
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=TRANSCRIPTION_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message="Transcricao ja existe e o video nao mudou.",
+        source_hash=video_hash,
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s' inalterada; etapa transcription pulada.", lesson.slug)
+    return entry
+
+
+def process_lesson_transcription(
+    lesson: Lesson,
+    model: WhisperModel,
+    video_hash: str,
+    cfg: TranscriptionConfig,
+    chunk_minutes: int,
+    language_hint: str | None,
+) -> tuple[list[TranscriptSegment], StepLogEntry]:
+    """Actually run the transcription step.
+
+    The caller must have already decided (via needs_transcription_processing)
+    that this is necessary, and must already have ffmpeg/whisper available
+    and a loaded model — this function does not check any of that, by
+    design, so the expensive checks/model load only ever happen once the
+    orchestrator knows there is real work to do.
+    """
+    started_at = datetime.now()
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+
+    audio_path = extract_audio(lesson.video_path, lesson.output_dir / AUDIO_FILENAME)
+    segments = transcribe_audio(model, audio_path, language=language_hint)
+    if cfg.save_raw:
+        write_raw_transcript(lesson.output_dir, segments)
+    if cfg.save_timestamps:
+        write_timestamped_transcript(lesson.output_dir, segments)
+    write_clean_transcript(lesson.output_dir, segments, chunk_minutes)
+
+    entry = StepLogEntry(
+        step=TRANSCRIPTION_STEP,
+        status=Status.COMPLETED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        source_hash=video_hash,
+    )
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s' transcrita.", lesson.slug)
+    return segments, entry
+
+
+def write_batch_summary(course: Course, entries: dict[str, dict[str, StepLogEntry]]) -> None:
+    """Write course-level `batch_log.json` and `batch_report.md` for this run.
+
+    `entries` maps lesson slug -> {step name -> StepLogEntry}, since a lesson
+    can have more than one step (foundation, transcription, ...). Columns are
+    discovered dynamically from whatever steps are actually present, so a
+    future phase adding a new step doesn't require touching this function.
+    """
     course.output_path.mkdir(parents=True, exist_ok=True)
     generated_at = datetime.now().isoformat()
 
     summary = {
         "course": course.name,
         "generated_at": generated_at,
-        "lessons": {slug: entry.status.value for slug, entry in entries.items()},
+        "lessons": {
+            slug: {step: entry.status.value for step, entry in steps.items()}
+            for slug, steps in entries.items()
+        },
     }
     (course.output_path / "batch_log.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
+    all_steps = sorted({step for steps in entries.values() for step in steps})
+    header_cols = ["Aula", *(step.capitalize() for step in all_steps)]
     lines = [
         f"# Batch report - {course.name}",
         "",
         f"Gerado em: {generated_at}",
         "",
-        "| Aula | Status (foundation) |",
-        "|---|---|",
+        f"| {' | '.join(header_cols)} |",
+        f"|{'---|' * len(header_cols)}",
     ]
-    for slug, entry in entries.items():
-        lines.append(f"| {slug} | {entry.status.value} |")
+    for slug, steps in entries.items():
+        row = [slug, *(steps[step].status.value if step in steps else "-" for step in all_steps)]
+        lines.append(f"| {' | '.join(row)} |")
     (course.output_path / "batch_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

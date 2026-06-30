@@ -65,3 +65,7 @@ strict = true
 mypy_path = "src"
 warn_return_any = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["ffmpeg.*", "whisper.*"]
+ignore_missing_imports = true

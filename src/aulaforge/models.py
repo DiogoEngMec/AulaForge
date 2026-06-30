@@ -38,13 +38,22 @@ class SourceInfo(BaseModel):
 
 
 class StepLogEntry(BaseModel):
-    """Outcome of a single pipeline step (foundation, transcription, ...) for a lesson."""
+    """Outcome of a single pipeline step (foundation, transcription, ...) for a lesson.
+
+    `source_hash` is the video fingerprint (SourceInfo.hash) this step ran
+    against, for steps that depend on it. It lets a later run detect that the
+    video changed since this step last completed, without comparing
+    timestamps between steps (which is fragile). None for steps that don't
+    depend on the video fingerprint, and for entries written before this
+    field existed (old logs stay valid since it's optional).
+    """
 
     step: str
     status: Status
     started_at: datetime
     finished_at: datetime
     message: str | None = None
+    source_hash: str | None = None
 
 
 class ProcessingLog(BaseModel):
@@ -56,6 +65,14 @@ class ProcessingLog(BaseModel):
     def latest(self, step: str) -> StepLogEntry | None:
         matches = [entry for entry in self.steps if entry.step == step]
         return matches[-1] if matches else None
+
+
+class TranscriptSegment(BaseModel):
+    """One Whisper transcript segment, matching DATA_CONTRACTS.md's schema."""
+
+    start: float
+    end: float
+    text: str
 
 
 class Lesson(BaseModel):

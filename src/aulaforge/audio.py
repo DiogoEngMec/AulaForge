@@ -30,7 +30,9 @@ def extract_audio(video_path: Path, output_path: Path) -> Path:
     already-extracted file.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = output_path.with_name(output_path.name + ".tmp")
+    # Keep .mp3 as the final extension so ffmpeg can infer the output format.
+    # audio.mp3 → audio.tmp.mp3  (not audio.mp3.tmp which ffmpeg can't handle)
+    tmp_path = output_path.with_stem(output_path.stem + ".tmp")
     try:
         _run_ffmpeg_extraction(video_path, tmp_path)
         if not tmp_path.exists() or tmp_path.stat().st_size == 0:

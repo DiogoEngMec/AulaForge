@@ -119,7 +119,8 @@ _RESUME_OPTION = typer.Option(
     False,
     "--resume",
     help=(
-        "Reprocessa apenas aulas que tenham ao menos um step FAILED no processing_log.json. "
+        "Reprocessa apenas aulas cujo ultimo status de algum step seja FAILED. "
+        "Entradas antigas de falhas seguidas de sucesso nao ativam o --resume. "
         "Se nao houver processing_log.json, processa normalmente. "
         "--force tem precedencia sobre --resume."
     ),
@@ -127,17 +128,25 @@ _RESUME_OPTION = typer.Option(
 
 
 def _should_skip_with_resume(lesson_output_dir: Path, lesson_slug: str) -> bool:
-    """Com --resume ativo: True = pular a aula (nenhum step FAILED no log).
+    """Com --resume ativo: True = pular a aula.
+
+    Considera apenas a entrada MAIS RECENTE de cada step. Um failed antigo
+    seguido de completed/skipped_unchanged não ativa o --resume.
 
     Retorna False (não pular) quando:
     - processing_log.json não existe (aula nunca processada → processar normalmente);
-    - há ao menos um step FAILED no log.
+    - ao menos um step tem último status FAILED.
     """
     log_path = lesson_output_dir / PROCESSING_LOG_FILENAME
     if not log_path.exists():
         return False
     log = read_processing_log(log_path, lesson_slug)
-    return not any(entry.status.value == "failed" for entry in log.steps)
+    seen_steps = {entry.step for entry in log.steps}
+    for step in seen_steps:
+        latest = log.latest(step)
+        if latest is not None and latest.status == Status.FAILED:
+            return False
+    return True
 
 
 @app.command("process-course")

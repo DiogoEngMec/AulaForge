@@ -19,6 +19,7 @@ venv/
 .env.*
 !.env.example
 .claude/settings.local.json
+aulaforge.yaml
 
 # Claude generated/session state
 .claude/projects/

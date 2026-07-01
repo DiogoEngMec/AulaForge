@@ -37,7 +37,7 @@ def test_extract_audio_renames_temp_file_into_place_on_success(
     assert result == output_path
     assert output_path.exists()
     assert output_path.read_bytes() == b"fake-mp3-bytes"
-    assert not output_path.with_name(output_path.name + ".tmp").exists()
+    assert not output_path.with_stem(output_path.stem + ".tmp").exists()
 
 
 def test_extract_audio_raises_and_cleans_up_temp_on_ffmpeg_failure(
@@ -56,7 +56,38 @@ def test_extract_audio_raises_and_cleans_up_temp_on_ffmpeg_failure(
         extract_audio(video_path, output_path)
 
     assert not output_path.exists()
-    assert not output_path.with_name(output_path.name + ".tmp").exists()
+    assert not output_path.with_stem(output_path.stem + ".tmp").exists()
+
+
+def test_temp_path_passed_to_ffmpeg_ends_with_mp3_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The temp path passed to _run_ffmpeg_extraction must end in .mp3.
+
+    ffmpeg infers the output format from the file extension. A path ending in
+    .tmp causes "Unable to find a suitable output format" — the canonical fix
+    is keeping .mp3 as the last extension (e.g. audio.tmp.mp3, not audio.mp3.tmp).
+    """
+    captured: list[Path] = []
+
+    def capture_run(video_path: Path, tmp_output_path: Path) -> None:
+        captured.append(tmp_output_path)
+        tmp_output_path.write_bytes(b"fake-mp3-bytes")
+
+    monkeypatch.setattr(audio_module, "_run_ffmpeg_extraction", capture_run)
+
+    video_path = tmp_path / "aula.mp4"
+    video_path.write_bytes(b"fake-video")
+    output_path = tmp_path / "audio.mp3"
+
+    extract_audio(video_path, output_path)
+
+    assert len(captured) == 1
+    assert captured[0].suffix == ".mp3", (
+        f"Temp path deve terminar em .mp3 para que ffmpeg infira o formato; "
+        f"recebido: {captured[0].name!r}"
+    )
+    assert captured[0] != output_path, "Temp path não deve ser o arquivo final"
 
 
 def test_extract_audio_raises_when_ffmpeg_produces_empty_file(

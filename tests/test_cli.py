@@ -832,6 +832,78 @@ def test_resume_force_flag_overrides_resume(
     assert len(processed) == 4, "--force deve reprocessar todas as 4 aulas independente de --resume"
 
 
+def test_resume_skips_lesson_with_stale_failed_but_recent_success(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """Stale FAILED entry followed by COMPLETED for the same step must not trigger --resume.
+
+    Scenario that exposed the bug in real validation:
+    1. Run A: step succeeds → completed
+    2. Some earlier run had a FAILED entry for the same step still in history
+    3. Run B with --resume → should skip the lesson (latest entry is completed)
+    """
+    from datetime import datetime
+
+    from aulaforge.checkpoints import PROCESSING_LOG_FILENAME, append_processing_log
+    from aulaforge.discovery import discover_course
+    from aulaforge.models import Status, StepLogEntry
+
+    config_file = _write_config(tmp_path, output_root)
+    runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    course = discover_course(course_dir, output_root)
+    first_lesson = course.lessons[0]
+    log_path = first_lesson.output_dir / PROCESSING_LOG_FILENAME
+    now = datetime.now()
+
+    # Inject a stale FAILED entry for transcription (simulates an old failed run)
+    append_processing_log(
+        log_path,
+        first_lesson.slug,
+        StepLogEntry(
+            step="transcription",
+            status=Status.FAILED,
+            started_at=now,
+            finished_at=now,
+            message="stale failure from old run",
+        ),
+    )
+    # Inject a more recent COMPLETED entry for the same step (simulates recovery)
+    append_processing_log(
+        log_path,
+        first_lesson.slug,
+        StepLogEntry(
+            step="transcription",
+            status=Status.COMPLETED,
+            started_at=now,
+            finished_at=now,
+            message="recovered in subsequent run",
+        ),
+    )
+
+    processed: list[str] = []
+    real_foundation = cli_module.process_lesson_foundation
+
+    def spy_foundation(lesson: Any, force: bool = False) -> Any:
+        processed.append(lesson.slug)
+        return real_foundation(lesson, force=force)
+
+    monkeypatch.setattr(cli_module, "process_lesson_foundation", spy_foundation)
+    result = runner.invoke(
+        app, ["process-course", str(course_dir), "--config", str(config_file), "--resume"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert first_lesson.slug not in processed, (
+        "--resume não deve reprocessar aula cujo último status de cada step é COMPLETED; "
+        "entradas antigas de falhas não devem ativar o --resume"
+    )
+
+
 # ── Phase 8 — Retry ───────────────────────────────────────────────────────────
 
 

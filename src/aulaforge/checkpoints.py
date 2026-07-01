@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from aulaforge.audio import AUDIO_FILENAME, extract_audio
-from aulaforge.config import LlmConfig, NotionConfig, OcrConfig, TranscriptionConfig
+from aulaforge.config import LlmConfig, MergeConfig, NotionConfig, OcrConfig, TranscriptionConfig
 from aulaforge.models import (
     Course,
     Lesson,
@@ -51,6 +51,7 @@ TRANSCRIPTION_STEP = "transcription"
 NOTES_STEP = "notes"
 NOTION_STEP = "notion"
 OCR_STEP = "ocr"
+MERGE_STEP = "merge"
 
 _HASH_CHUNK_SIZE = 1024 * 1024  # 1 MiB, keeps memory flat for multi-GB videos
 
@@ -701,6 +702,136 @@ def process_lesson_ocr(
         "Aula '%s': OCR concluido (%d frame(s) processados).", lesson.slug, len(results)
     )
     return results, entry
+
+
+def needs_merge_processing(
+    lesson: Lesson,
+    merge_input_hash: str,
+    force: bool = False,
+) -> bool:
+    """Decide whether the merge step must (re)run for this lesson.
+
+    Reprocesses when: ``--force``; the latest ``"merge"`` log entry is not done;
+    its source_hash differs from *merge_input_hash* (transcript or OCR content
+    changed, or config changed); or ``08_MERGE_AUDIO_VIDEO.md`` is absent.
+    """
+    from aulaforge.merge import MERGE_MD_FILENAME
+
+    if force:
+        return True
+
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    log = read_processing_log(processing_log_path, lesson.slug)
+    if not _step_log_shows_done(log, MERGE_STEP):
+        return True
+
+    latest = log.latest(MERGE_STEP)
+    if latest is None or latest.source_hash != merge_input_hash:
+        return True
+
+    return not (lesson.output_dir / MERGE_MD_FILENAME).exists()
+
+
+def record_skipped_merge(
+    lesson: Lesson, merge_hash: str, started_at: datetime
+) -> StepLogEntry:
+    """Log a merge step that needed no work this run."""
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=MERGE_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message="Merge já existe e nenhuma entrada mudou.",
+        source_hash=merge_hash,
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': etapa merge pulada.", lesson.slug)
+    return entry
+
+
+def record_merge_skipped_no_inputs(lesson: Lesson, started_at: datetime) -> StepLogEntry:
+    """Log merge as skipped because neither transcript nor OCR inputs are available.
+
+    Not a processing failure — the prerequisite phases (2 and/or 5) are
+    responsible for providing the inputs; records as SKIPPED_UNCHANGED so the
+    batch exit code remains driven by whatever caused those phases to be absent.
+    """
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=MERGE_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message=(
+            "Sem transcrição com timestamps nem OCR disponíveis — "
+            "execute as Fases 2 e/ou 5 antes."
+        ),
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': merge pulado (sem entradas disponíveis).", lesson.slug)
+    return entry
+
+
+def record_merge_skipped_disabled(lesson: Lesson, started_at: datetime) -> StepLogEntry:
+    """Log merge as skipped because merge.enabled=false in config."""
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=MERGE_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message="Merge desabilitado na config (merge.enabled = false).",
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': merge pulado (desabilitado na config).", lesson.slug)
+    return entry
+
+
+def process_lesson_merge(
+    lesson: Lesson,
+    merge_input_hash: str,
+    transcript_raw: str | None,
+    ocr_raw: str | None,
+    cfg_merge: MergeConfig,
+) -> tuple[str, StepLogEntry]:
+    """Merge transcript + OCR for one lesson and record the step outcome.
+
+    `transcript_raw` and `ocr_raw` are the raw JSON strings read from disk by
+    the caller; None when the corresponding file is absent (partial merge is
+    allowed). Raises ValidationError/JSONDecodeError if a file exists but is
+    invalid — the caller must NOT pre-filter these as absent.
+    """
+    from aulaforge.merge import (
+        merge_lesson,
+        parse_ocr_results,
+        parse_transcript_segments,
+        write_merge_md,
+    )
+
+    started_at = datetime.now()
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+
+    segments = parse_transcript_segments(transcript_raw) if transcript_raw is not None else None
+    ocr_results = parse_ocr_results(ocr_raw) if ocr_raw is not None else None
+
+    content = merge_lesson(segments, ocr_results, lesson.title, cfg_merge)
+    write_merge_md(lesson.output_dir, content)
+
+    entry = StepLogEntry(
+        step=MERGE_STEP,
+        status=Status.COMPLETED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        source_hash=merge_input_hash,
+    )
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': merge concluído.", lesson.slug)
+    return content, entry
 
 
 def write_batch_summary(course: Course, entries: dict[str, dict[str, StepLogEntry]]) -> None:

@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, PositiveInt
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_CONFIG_FILENAME = "aulaforge.yaml"
@@ -98,6 +98,14 @@ class NotionConfig(BaseModel):
     max_retries: int = 3
 
 
+class MergeConfig(BaseModel):
+    """Phase 6 merge config. Habilitado por padrão: sem dependências externas."""
+
+    enabled: bool = True
+    window_seconds: float = 15.0  # janela de associação OCR→transcrição (segundos)
+    group_minutes: PositiveInt = 10  # agrupamento de blocos no Markdown (minutos)
+
+
 class AulaForgeConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AULAFORGE_", extra="ignore")
 
@@ -107,6 +115,7 @@ class AulaForgeConfig(BaseSettings):
     llm: LlmConfig = LlmConfig()
     notion: NotionConfig = NotionConfig()
     ocr: OcrConfig = OcrConfig()
+    merge: MergeConfig = MergeConfig()
 
 
 def resolve_config_path(config_path: Path | None) -> Path | None:

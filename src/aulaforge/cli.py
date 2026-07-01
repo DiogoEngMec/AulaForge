@@ -1,4 +1,4 @@
-"""AulaForge CLI — Fases 1–5: foundation, transcrição, notes, Notion, OCR."""
+"""AulaForge CLI — Fases 1–6: foundation, transcrição, notes, Notion, OCR, merge."""
 
 from __future__ import annotations
 
@@ -10,26 +10,32 @@ from rich.console import Console
 
 from aulaforge.checkpoints import (
     FOUNDATION_STEP,
+    MERGE_STEP,
     NOTES_STEP,
     NOTION_STEP,
     OCR_STEP,
     TRANSCRIPTION_STEP,
     can_skip_notion_without_network,
+    needs_merge_processing,
     needs_notes_processing,
     needs_notion_processing,
     needs_ocr_processing,
     needs_transcription_processing,
     process_lesson_foundation,
+    process_lesson_merge,
     process_lesson_notes,
     process_lesson_notion,
     process_lesson_ocr,
     process_lesson_transcription,
     record_failed_foundation,
     record_failed_step,
+    record_merge_skipped_disabled,
+    record_merge_skipped_no_inputs,
     record_notes_skipped_no_transcript,
     record_notion_skipped_disabled,
     record_notion_skipped_no_notes,
     record_ocr_skipped_disabled,
+    record_skipped_merge,
     record_skipped_notes,
     record_skipped_notion,
     record_skipped_ocr,
@@ -39,6 +45,7 @@ from aulaforge.checkpoints import (
 from aulaforge.config import load_config
 from aulaforge.discovery import discover_course
 from aulaforge.logging_setup import ensure_utf8_console, setup_logging
+from aulaforge.merge import compute_merge_input_hash
 from aulaforge.models import Status, StepLogEntry
 from aulaforge.notes import compute_notes_input_hash, get_transcript_for_notes
 from aulaforge.notion import (
@@ -47,9 +54,10 @@ from aulaforge.notion import (
     compute_notion_input_hash,
     get_note_for_sync,
 )
-from aulaforge.ocr import check_ocr_dependencies, compute_ocr_input_hash
+from aulaforge.ocr import OCR_JSON_FILENAME, check_ocr_dependencies, compute_ocr_input_hash
 from aulaforge.ollama_client import check_ollama_dependencies
 from aulaforge.transcription import (
+    TIMESTAMPED_TRANSCRIPT_FILENAME,
     check_transcription_dependencies,
     load_whisper_model,
     whisper_language_hint,
@@ -410,6 +418,59 @@ def process_course(
                     except Exception as exc:
                         lesson_entries[OCR_STEP] = record_failed_step(
                             lesson, OCR_STEP, ocr_started_at, exc
+                        )
+                        had_processing_failure = True
+                        if not cfg.processing.continue_on_error:
+                            entries[lesson.slug] = lesson_entries
+                            write_batch_summary(course, entries)
+                            raise
+
+        # --- Phase 6: Merge ---
+        merge_started_at = datetime.now()
+        if not cfg.merge.enabled:
+            lesson_entries[MERGE_STEP] = record_merge_skipped_disabled(lesson, merge_started_at)
+        else:
+            transcript_path = lesson.output_dir / TIMESTAMPED_TRANSCRIPT_FILENAME
+            ocr_path = lesson.output_dir / OCR_JSON_FILENAME
+            transcript_raw = (
+                transcript_path.read_text(encoding="utf-8") if transcript_path.exists() else None
+            )
+            ocr_raw = ocr_path.read_text(encoding="utf-8") if ocr_path.exists() else None
+
+            if transcript_raw is None and ocr_raw is None:
+                lesson_entries[MERGE_STEP] = record_merge_skipped_no_inputs(
+                    lesson, merge_started_at
+                )
+            else:
+                merge_hash = compute_merge_input_hash(transcript_raw, ocr_raw, cfg.merge)
+                try:
+                    needs_merge = needs_merge_processing(
+                        lesson, merge_hash, force=effective_force
+                    )
+                except Exception as exc:
+                    lesson_entries[MERGE_STEP] = record_failed_step(
+                        lesson, MERGE_STEP, merge_started_at, exc
+                    )
+                    entries[lesson.slug] = lesson_entries
+                    had_processing_failure = True
+                    if not cfg.processing.continue_on_error:
+                        write_batch_summary(course, entries)
+                        raise
+                    continue
+
+                if not needs_merge:
+                    lesson_entries[MERGE_STEP] = record_skipped_merge(
+                        lesson, merge_hash, merge_started_at
+                    )
+                else:
+                    try:
+                        _, merge_entry = process_lesson_merge(
+                            lesson, merge_hash, transcript_raw, ocr_raw, cfg.merge
+                        )
+                        lesson_entries[MERGE_STEP] = merge_entry
+                    except Exception as exc:
+                        lesson_entries[MERGE_STEP] = record_failed_step(
+                            lesson, MERGE_STEP, merge_started_at, exc
                         )
                         had_processing_failure = True
                         if not cfg.processing.continue_on_error:

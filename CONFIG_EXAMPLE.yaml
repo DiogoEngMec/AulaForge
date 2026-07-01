@@ -56,6 +56,11 @@ notion:
   request_timeout: 30.0
   max_retries: 3
 
+merge:
+  enabled: true               # habilitado por padrão (sem dependências externas)
+  window_seconds: 15.0        # janela de associação OCR→transcrição (segundos)
+  group_minutes: 10           # agrupamento de blocos no Markdown (minutos)
+
 outputs:
   generate_course_overview: true
   generate_claude_code_context: true

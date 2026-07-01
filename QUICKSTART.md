@@ -74,6 +74,12 @@ Para reprocessar apenas aulas com falhas recentes:
 aulaforge process-course "C:\Aulas\MeuCurso" --config aulaforge.yaml --resume
 ```
 
+Para forçar reprocessamento completo de todas as aulas:
+
+```powershell
+aulaforge process-course "C:\Aulas\MeuCurso" --config aulaforge.yaml --force
+```
+
 ---
 
 ## Passo 5 — Ver os resultados

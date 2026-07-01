@@ -16,7 +16,7 @@ processing:
 
 transcription:
   engine: "whisper-local"
-  model: "medium"
+  model: "base"             # base = mais rápido para começar; medium = melhor qualidade
   save_raw: true
   save_timestamps: true
   send_raw_to_notion: false
@@ -42,7 +42,7 @@ llm:
   max_retries: 3
 
 notion:
-  enabled: true
+  enabled: false            # habilite somente após configurar NOTION_TOKEN
   auto_send: true
   mode: "course_page"
   database_id: null # opcional; se definido, tem prioridade sobre database_name

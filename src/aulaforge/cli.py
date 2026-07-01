@@ -1,4 +1,4 @@
-"""AulaForge CLI — Fases 1–8: foundation, transcrição, notes, Notion, OCR, merge, outputs."""
+"""AulaForge CLI — Fases 1–9: foundation, transcrição, notes, Notion, OCR, merge, outputs."""
 
 from __future__ import annotations
 

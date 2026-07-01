@@ -17,10 +17,11 @@ from datetime import datetime
 from pathlib import Path
 
 from aulaforge.audio import AUDIO_FILENAME, extract_audio
-from aulaforge.config import LlmConfig, TranscriptionConfig
+from aulaforge.config import LlmConfig, NotionConfig, TranscriptionConfig
 from aulaforge.models import (
     Course,
     Lesson,
+    NotionPageInfo,
     ProcessingLog,
     SourceInfo,
     Status,
@@ -28,6 +29,7 @@ from aulaforge.models import (
     TranscriptSegment,
 )
 from aulaforge.notes import NOTES_FILENAME, generate_lesson_note
+from aulaforge.notion import compute_notion_input_hash, read_notion_page_info, sync_lesson_to_notion
 from aulaforge.transcription import (
     CLEAN_TRANSCRIPT_FILENAME,
     RAW_TRANSCRIPT_FILENAME,
@@ -46,6 +48,7 @@ PROCESSING_LOG_FILENAME = "processing_log.json"
 FOUNDATION_STEP = "foundation"
 TRANSCRIPTION_STEP = "transcription"
 NOTES_STEP = "notes"
+NOTION_STEP = "notion"
 
 _HASH_CHUNK_SIZE = 1024 * 1024  # 1 MiB, keeps memory flat for multi-GB videos
 
@@ -399,6 +402,183 @@ def process_lesson_notes(
     append_processing_log(processing_log_path, lesson.slug, entry)
     logger.info("Aula '%s': nota gerada em '%s'.", lesson.slug, notes_path.name)
     return note_content, entry
+
+
+def needs_notion_processing(
+    lesson: Lesson,
+    course_output_path: Path,
+    notion_hash: str,
+    force: bool = False,
+) -> bool:
+    """Decide whether the notion step must (re)run for this lesson.
+
+    Reprocesses when: --force; the latest 'notion' log entry isn't done;
+    its source_hash differs from `notion_hash` (note content, database or
+    NOTION_SYNC_VERSION changed); or the local sync state needed to skip
+    safely is missing (NOTION_PAGE_INFO.json, this lesson's entry in it, or
+    its toggle_block_id) even though the log says it completed.
+    """
+    if force:
+        return True
+
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    log = read_processing_log(processing_log_path, lesson.slug)
+    if not _step_log_shows_done(log, NOTION_STEP):
+        return True
+
+    latest = log.latest(NOTION_STEP)
+    if latest is None or latest.source_hash != notion_hash:
+        return True
+
+    page_info = read_notion_page_info(course_output_path)
+    if page_info is None:
+        return True
+    lesson_info = page_info.lessons.get(lesson.slug)
+    if lesson_info is None or not lesson_info.toggle_block_id:
+        return True
+    return lesson_info.synced_hash != notion_hash
+
+
+def can_skip_notion_without_network(
+    lesson: Lesson,
+    course_output_path: Path,
+    note_content: str,
+    force: bool = False,
+    configured_database_id: str | None = None,
+) -> tuple[bool, str | None, str | None]:
+    """Offline pre-check: can we skip Notion without any HTTP call?
+
+    Uses the database_id cached in NOTION_PAGE_INFO.json to compute a trial
+    hash and compare it against the processing log and the per-lesson
+    synced_hash. Returns (can_skip, trial_hash, cached_database_id).
+
+    If can_skip is True, call record_skipped_notion(lesson, trial_hash, ...).
+    If False, proceed with check_notion_dependencies → needs_notion_processing.
+
+    Pass configured_database_id (cfg.notion.database_id) so an explicit
+    database change in config is detected locally without a network call.
+    """
+    if force:
+        return False, None, None
+
+    page_info = read_notion_page_info(course_output_path)
+    if page_info is None:
+        return False, None, None
+
+    # If a specific database_id is configured and no longer matches the
+    # cached one, the target database changed → must resync.
+    if configured_database_id is not None and page_info.database_id != configured_database_id:
+        return False, None, None
+
+    lesson_info = page_info.lessons.get(lesson.slug)
+    if lesson_info is None or not lesson_info.toggle_block_id:
+        return False, None, None
+
+    trial_hash = compute_notion_input_hash(note_content, page_info.database_id)
+
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    log = read_processing_log(processing_log_path, lesson.slug)
+    if not _step_log_shows_done(log, NOTION_STEP):
+        return False, trial_hash, page_info.database_id
+
+    latest = log.latest(NOTION_STEP)
+    if latest is None or latest.source_hash != trial_hash:
+        return False, trial_hash, page_info.database_id
+
+    if lesson_info.synced_hash != trial_hash:
+        return False, trial_hash, page_info.database_id
+
+    return True, trial_hash, page_info.database_id
+
+
+def record_skipped_notion(lesson: Lesson, notion_hash: str, started_at: datetime) -> StepLogEntry:
+    """Log a notion step that needed no work this run."""
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=NOTION_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message="Pagina/toggle do Notion ja sincronizados e nada mudou.",
+        source_hash=notion_hash,
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': etapa notion pulada.", lesson.slug)
+    return entry
+
+
+def record_notion_skipped_no_notes(lesson: Lesson, started_at: datetime) -> StepLogEntry:
+    """Log notion as skipped because no local lesson note is available yet.
+
+    Not a processing failure — the notes phase (Fase 3) is the prerequisite;
+    records as SKIPPED so the batch exit code stays driven by whatever
+    caused the note file to be absent.
+    """
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=NOTION_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message="Nota local indisponivel — execute a Fase 3 antes.",
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': notion pulada (sem nota local).", lesson.slug)
+    return entry
+
+
+def record_notion_skipped_disabled(lesson: Lesson, started_at: datetime) -> StepLogEntry:
+    """Log notion as skipped because notion.enabled=false in config."""
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=NOTION_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message="Notion desabilitado na config (notion.enabled ou notion.auto_send = false).",
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': notion pulada (desabilitado na config).", lesson.slug)
+    return entry
+
+
+def process_lesson_notion(
+    course: Course,
+    lesson: Lesson,
+    note_content: str,
+    notion_hash: str,
+    cfg_notion: NotionConfig,
+    token: str,
+    database_id: str,
+) -> tuple[NotionPageInfo, StepLogEntry]:
+    """Sync this lesson's note to Notion and record the step outcome.
+
+    The caller must have already decided (via `needs_notion_processing`) that
+    this is necessary, and verified Notion is available (token + database)
+    via `notion.check_notion_dependencies`. This function does not check
+    availability itself, by design — checks only happen once per run.
+    """
+    started_at = datetime.now()
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+
+    page_info, _toggle_id = sync_lesson_to_notion(
+        course, lesson, note_content, notion_hash, cfg_notion, token, database_id
+    )
+
+    entry = StepLogEntry(
+        step=NOTION_STEP,
+        status=Status.COMPLETED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        source_hash=notion_hash,
+    )
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': sincronizada com o Notion.", lesson.slug)
+    return page_info, entry
 
 
 def write_batch_summary(course: Course, entries: dict[str, dict[str, StepLogEntry]]) -> None:

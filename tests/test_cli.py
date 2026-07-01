@@ -284,6 +284,217 @@ def test_process_course_notes_skipped_when_transcription_dep_missing(
     assert result.exit_code == DEPENDENCY_MISSING_EXIT_CODE
 
 
+# ---------------------------------------------------------------------------
+# Phase 4 — Notion
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_notion_success(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> LoadModelSpy:
+    """Extend mock_notes_success so Notion sync also works in tests.
+
+    Patches check_notion_dependencies to return a valid availability object
+    and patches sync_lesson_to_notion in checkpoints to avoid real API calls,
+    while still running the real process_lesson_notion so the processing_log
+    is updated and skip logic works on subsequent runs.
+    """
+    import aulaforge.notion as notion_mod
+    from aulaforge.models import NotionLessonInfo, NotionPageInfo
+    from aulaforge.notion import NotionAvailability
+
+    monkeypatch.setattr(
+        cli_module,
+        "check_notion_dependencies",
+        lambda cfg: NotionAvailability(errors=[], token="fake-token", database_id="fake-db"),
+    )
+
+    def fake_sync(  # type: ignore[misc]
+        course: object,
+        lesson: object,
+        note: str,
+        nhash: str,
+        cfg: object,
+        token: str,
+        db: str,
+    ) -> tuple[object, str]:
+        # Mirror real sync: accumulate all lessons in the same page info file.
+        from aulaforge.models import Course, Lesson
+
+        assert isinstance(course, Course)
+        assert isinstance(lesson, Lesson)
+        existing = notion_mod.read_notion_page_info(course.output_path)
+        if existing is None:
+            page_info = NotionPageInfo(
+                course_page_id="page-1",
+                course_page_url="https://notion.so/page-1",
+                database_id=db,
+                lessons={},
+            )
+        else:
+            page_info = existing
+        page_info.lessons[lesson.slug] = NotionLessonInfo(
+            toggle_block_id="toggle-1", synced_hash=nhash
+        )
+        notion_mod.write_notion_page_info(course.output_path, page_info)
+        return page_info, "toggle-1"
+
+    import aulaforge.checkpoints as chk_module
+    monkeypatch.setattr(chk_module, "sync_lesson_to_notion", fake_sync)
+    return mock_notes_success
+
+
+def _write_config_with_notion(tmp_path: Path, output_root: Path) -> Path:
+    config_file = tmp_path / "aulaforge.yaml"
+    config_file.write_text(
+        f'project:\n  output_dir: "{output_root.as_posix()}"\nnotion:\n  enabled: true\n',
+        encoding="utf-8",
+    )
+    return config_file
+
+
+def test_process_course_notion_skipped_when_disabled(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """Default config has notion.enabled=false; no Notion calls should occur."""
+    config_file = _write_config(tmp_path, output_root)
+
+    def boom(cfg: object) -> object:
+        raise AssertionError("check_notion_dependencies nao deve ser chamado quando disabled")
+
+    import aulaforge.cli as cli_mod_ref
+
+    orig = cli_mod_ref.check_notion_dependencies
+    cli_mod_ref.check_notion_dependencies = boom  # type: ignore[assignment]
+    try:
+        result = runner.invoke(
+            app, ["process-course", str(course_dir), "--config", str(config_file)]
+        )
+    finally:
+        cli_mod_ref.check_notion_dependencies = orig  # type: ignore[assignment]
+
+    assert result.exit_code == 0, result.output
+
+
+def test_process_course_notion_skipped_when_notes_missing(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_transcription_success: LoadModelSpy,
+) -> None:
+    """With Ollama absent, notes won't exist; notion step should be SKIPPED not FAILED."""
+    config_file = _write_config_with_notion(tmp_path, output_root)
+    monkeypatch.setattr(
+        cli_module, "check_ollama_dependencies", lambda b, m: ["Ollama ausente (sim)"]
+    )
+    from aulaforge.notion import NotionAvailability
+    monkeypatch.setattr(
+        cli_module, "check_notion_dependencies",
+        lambda cfg: NotionAvailability(errors=[], token="tk", database_id="db"),
+    )
+
+    result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    # Ollama absent = exit code 2 (dep missing), not notion error.
+    assert result.exit_code == DEPENDENCY_MISSING_EXIT_CODE
+
+
+def test_process_course_notion_dependency_missing_exit_code_2(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """Token missing or invalid should produce exit code 2 (dep missing)."""
+    config_file = _write_config_with_notion(tmp_path, output_root)
+    from aulaforge.notion import NotionAvailability
+    monkeypatch.setattr(
+        cli_module,
+        "check_notion_dependencies",
+        lambda cfg: NotionAvailability(errors=["NOTION_TOKEN nao definido (simulado)"]),
+    )
+
+    result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    assert result.exit_code == DEPENDENCY_MISSING_EXIT_CODE
+
+
+def test_process_course_second_run_skips_notion_without_http_calls(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notion_success: LoadModelSpy,
+) -> None:
+    config_file = _write_config_with_notion(tmp_path, output_root)
+
+    # First run: all steps including Notion complete via mocked happy path.
+    result1 = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+    assert result1.exit_code == 0, result1.output
+
+    # Second run: Notion was already synced; NEITHER sync_lesson_to_notion NOR
+    # check_notion_dependencies should be called (M1: lazy dependency check).
+    import aulaforge.checkpoints as chk_module
+
+    def boom_sync(*args: object, **kwargs: object) -> object:
+        raise AssertionError("sync_lesson_to_notion nao deveria ser chamado na 2a run")
+
+    def boom_check_deps(cfg: object) -> object:
+        raise AssertionError("check_notion_dependencies nao deveria ser chamado na 2a run")
+
+    monkeypatch.setattr(chk_module, "sync_lesson_to_notion", boom_sync)
+    monkeypatch.setattr(cli_module, "check_notion_dependencies", boom_check_deps)
+    result2 = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    assert result2.exit_code == 0, result2.output
+    assert "pulada" in result2.output
+
+
+def test_process_course_notion_error_does_not_stop_other_lessons(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """An HTTP error syncing one lesson should leave continue_on_error=True behaviour intact."""
+    config_file = _write_config_with_notion(tmp_path, output_root)
+    from aulaforge.notion import NotionAvailability
+
+    monkeypatch.setattr(
+        cli_module,
+        "check_notion_dependencies",
+        lambda cfg: NotionAvailability(errors=[], token="tk", database_id="db"),
+    )
+
+    call_count = 0
+    import aulaforge.checkpoints as chk_module
+    def flaky_sync(course: object, lesson: object, *args: object, **kwargs: object) -> object:
+        nonlocal call_count
+        call_count += 1
+        from aulaforge.notion_client import NotionAPIError
+        raise NotionAPIError("falha simulada", status_code=500)
+
+    monkeypatch.setattr(chk_module, "sync_lesson_to_notion", flaky_sync)
+
+    result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    # All 4 lessons attempted, all Notion syncs failed => processing failure exit code.
+    assert result.exit_code == PROCESSING_FAILURE_EXIT_CODE
+    # But all lesson dirs should still exist (batch continued past each failure).
+    course_output = output_root / course_dir.name
+    lesson_dirs = [p for p in course_output.iterdir() if p.is_dir()]
+    assert len(lesson_dirs) == 4
+    assert call_count == 4
+
+
 def test_process_course_skips_dependency_check_when_nothing_needs_transcription(
     course_dir: Path,
     output_root: Path,

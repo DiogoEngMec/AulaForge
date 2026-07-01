@@ -1,7 +1,7 @@
 """Configuration loading for AulaForge.
 
 Only the sections used by phases implemented so far (`project`, `processing`,
-`transcription`, `llm`) are modeled. Other sections (ocr, notion, outputs)
+`transcription`, `llm`, `notion`) are modeled. Other sections (ocr, outputs)
 belong to later phases and are accepted-but-ignored so a real, full config
 file can already be loaded without validation errors.
 """
@@ -52,6 +52,30 @@ class LlmConfig(BaseModel):
     max_input_chars: int = 10000
 
 
+class NotionConfig(BaseModel):
+    """Phase 4 config. `enabled` defaults to False: Notion sync is opt-in until
+
+    the user has created/shared the database and set NOTION_TOKEN, unlike
+    CONFIG_EXAMPLE.yaml's illustrative `enabled: true`.
+    """
+
+    enabled: bool = False
+    auto_send: bool = True
+    mode: str = "course_page"
+    database_id: str | None = None
+    database_name: str = "Aulas Processadas"
+    token_env_var: str = "NOTION_TOKEN"
+    page_per_course: bool = True
+    update_existing_page: bool = True
+    lesson_blocks_as_toggle_h1: bool = True
+    send_raw_transcript: bool = False
+    send_screenshots: bool = False
+    api_version: str = "2022-06-28"
+    base_url: str = "https://api.notion.com/v1"
+    request_timeout: float = 30.0
+    max_retries: int = 3
+
+
 class AulaForgeConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AULAFORGE_", extra="ignore")
 
@@ -59,6 +83,7 @@ class AulaForgeConfig(BaseSettings):
     processing: ProcessingConfig = ProcessingConfig()
     transcription: TranscriptionConfig = TranscriptionConfig()
     llm: LlmConfig = LlmConfig()
+    notion: NotionConfig = NotionConfig()
 
 
 def resolve_config_path(config_path: Path | None) -> Path | None:

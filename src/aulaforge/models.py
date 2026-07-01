@@ -92,3 +92,25 @@ class Course(BaseModel):
     input_path: Path
     output_path: Path
     lessons: list[Lesson] = Field(default_factory=list)
+
+
+class NotionLessonInfo(BaseModel):
+    """Notion sync bookkeeping for a single lesson's toggle block."""
+
+    toggle_block_id: str
+    synced_hash: str
+
+
+class NotionPageInfo(BaseModel):
+    """Course-level record of the Notion page/blocks AulaForge owns.
+
+    Persisted as NOTION_PAGE_INFO.json under the course output folder (one
+    file per course, since the Notion page itself is one-per-course). Acts
+    as the primary source of truth for IDs so reruns avoid duplicating the
+    course page or any lesson's toggle block.
+    """
+
+    course_page_id: str
+    course_page_url: str
+    database_id: str
+    lessons: dict[str, NotionLessonInfo] = Field(default_factory=dict)

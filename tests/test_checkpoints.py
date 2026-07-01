@@ -10,27 +10,33 @@ import pytest
 
 from aulaforge.checkpoints import (
     NOTES_STEP,
+    NOTION_STEP,
     PROCESSING_LOG_FILENAME,
     SOURCE_INFO_FILENAME,
     TRANSCRIPTION_STEP,
     compute_sha256,
     needs_foundation_processing,
     needs_notes_processing,
+    needs_notion_processing,
     needs_transcription_processing,
     process_lesson_foundation,
     process_lesson_notes,
+    process_lesson_notion,
     process_lesson_transcription,
     read_processing_log,
     record_failed_foundation,
     record_failed_step,
     record_notes_skipped_no_transcript,
+    record_notion_skipped_disabled,
+    record_notion_skipped_no_notes,
     record_skipped_notes,
+    record_skipped_notion,
     record_skipped_transcription,
     write_batch_summary,
 )
-from aulaforge.config import LlmConfig, TranscriptionConfig
+from aulaforge.config import LlmConfig, NotionConfig, TranscriptionConfig
 from aulaforge.discovery import discover_course
-from aulaforge.models import Status
+from aulaforge.models import NotionLessonInfo, NotionPageInfo, Status
 
 
 def test_compute_sha256_is_deterministic(tmp_path: Path) -> None:
@@ -511,4 +517,191 @@ def test_write_batch_summary_renders_notes_column(
 
     report = (course.output_path / "batch_report.md").read_text(encoding="utf-8")
     assert "Notes" in report
+    assert "skipped_unchanged" in report
+
+
+# ---------------------------------------------------------------------------
+# Notion step (Phase 4)
+# ---------------------------------------------------------------------------
+
+
+def _make_page_info(course_output: Path, lesson_slug: str, notion_hash: str) -> NotionPageInfo:
+    """Write and return a NotionPageInfo with one pre-synced lesson entry."""
+    import aulaforge.notion as notion_mod
+
+    lesson_info = NotionLessonInfo(toggle_block_id="toggle-1", synced_hash=notion_hash)
+    info = NotionPageInfo(
+        course_page_id="page-1",
+        course_page_url="https://notion.so/page-1",
+        database_id="db-1",
+        lessons={lesson_slug: lesson_info},
+    )
+    notion_mod.write_notion_page_info(course_output, info)
+    return info
+
+
+def test_needs_notion_processing_true_when_never_run(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    assert needs_notion_processing(lesson, course.output_path, "any-hash") is True
+
+
+def test_needs_notion_processing_false_after_completed(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    notion_hash = "hash-abc"
+    _make_page_info(course.output_path, lesson.slug, notion_hash)
+    record_skipped_notion(lesson, notion_hash, datetime.now())
+    assert needs_notion_processing(lesson, course.output_path, notion_hash) is False
+
+
+def test_needs_notion_processing_true_when_hash_changed(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    notion_hash = "hash-abc"
+    _make_page_info(course.output_path, lesson.slug, notion_hash)
+    record_skipped_notion(lesson, notion_hash, datetime.now())
+    assert needs_notion_processing(lesson, course.output_path, "different-hash") is True
+
+
+def test_needs_notion_processing_true_when_page_info_missing(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    notion_hash = "hash-abc"
+    # Log says completed but no NOTION_PAGE_INFO.json on disk.
+    record_skipped_notion(lesson, notion_hash, datetime.now())
+    assert needs_notion_processing(lesson, course.output_path, notion_hash) is True
+
+
+def test_needs_notion_processing_true_when_toggle_block_id_missing(
+    course_dir: Path, output_root: Path
+) -> None:
+    import aulaforge.notion as notion_mod
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    notion_hash = "hash-abc"
+    # Page info exists but this lesson has no entry.
+    info = NotionPageInfo(
+        course_page_id="page-1", course_page_url="url", database_id="db-1", lessons={}
+    )
+    notion_mod.write_notion_page_info(course.output_path, info)
+    record_skipped_notion(lesson, notion_hash, datetime.now())
+    assert needs_notion_processing(lesson, course.output_path, notion_hash) is True
+
+
+def test_needs_notion_processing_respects_force(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    assert needs_notion_processing(lesson, course.output_path, "any-hash", force=True) is True
+
+
+def test_record_skipped_notion_logs_without_touching_notion(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+
+    entry = record_skipped_notion(lesson, "test-hash", datetime.now())
+
+    assert entry.status == Status.SKIPPED_UNCHANGED
+    assert entry.source_hash == "test-hash"
+    log = read_processing_log(lesson.output_dir / PROCESSING_LOG_FILENAME, lesson.slug)
+    assert log.latest(NOTION_STEP) is not None
+    assert log.latest(NOTION_STEP).status == Status.SKIPPED_UNCHANGED  # type: ignore[union-attr]
+
+
+def test_record_notion_skipped_no_notes_uses_skipped_status(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+
+    entry = record_notion_skipped_no_notes(lesson, datetime.now())
+
+    assert entry.status == Status.SKIPPED_UNCHANGED
+    assert entry.source_hash is None
+    assert "Fase 3" in (entry.message or "")
+
+
+def test_record_notion_skipped_disabled_message_mentions_enabled(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+
+    entry = record_notion_skipped_disabled(lesson, datetime.now())
+
+    assert entry.status == Status.SKIPPED_UNCHANGED
+    msg = (entry.message or "").lower()
+    assert "enabled" in msg or "auto_send" in msg
+
+
+def test_process_lesson_notion_calls_sync_and_logs_completed(
+    course_dir: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import aulaforge.checkpoints as chk_module
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+
+    fake_info = NotionPageInfo(
+        course_page_id="page-1",
+        course_page_url="url",
+        database_id="db-1",
+        lessons={"aula_01": NotionLessonInfo(toggle_block_id="t-1", synced_hash="h-1")},
+    )
+    monkeypatch.setattr(
+        chk_module,
+        "sync_lesson_to_notion",
+        lambda course, lesson, note, nhash, cfg, token, db: (fake_info, "t-1"),
+    )
+
+    cfg_notion = NotionConfig(database_id="db-1")
+    page_info, entry = process_lesson_notion(
+        course, lesson, "# nota", "h-1", cfg_notion, "token", "db-1"
+    )
+
+    assert entry.status == Status.COMPLETED
+    assert entry.source_hash == "h-1"
+    assert entry.step == NOTION_STEP
+    assert page_info.course_page_id == "page-1"
+
+    log = read_processing_log(lesson.output_dir / PROCESSING_LOG_FILENAME, lesson.slug)
+    assert log.latest(NOTION_STEP) is not None
+    assert log.latest(NOTION_STEP).status == Status.COMPLETED  # type: ignore[union-attr]
+
+
+def test_write_batch_summary_renders_notion_column(
+    course_dir: Path, output_root: Path
+) -> None:
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    _, foundation_entry = process_lesson_foundation(lesson)
+    notion_entry = record_skipped_notion(lesson, "hash", datetime.now())
+
+    write_batch_summary(
+        course,
+        {lesson.slug: {"foundation": foundation_entry, NOTION_STEP: notion_entry}},
+    )
+
+    report = (course.output_path / "batch_report.md").read_text(encoding="utf-8")
+    assert "Notion" in report
     assert "skipped_unchanged" in report

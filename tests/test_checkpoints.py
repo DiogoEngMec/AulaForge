@@ -37,11 +37,11 @@ from aulaforge.checkpoints import (
     record_skipped_notion,
     record_skipped_ocr,
     record_skipped_transcription,
-    write_batch_summary,
 )
 from aulaforge.config import LlmConfig, NotionConfig, OcrConfig, TranscriptionConfig
 from aulaforge.discovery import discover_course
 from aulaforge.models import NotionLessonInfo, NotionPageInfo, Status
+from aulaforge.reports import write_batch_summary
 
 
 def test_compute_sha256_is_deterministic(tmp_path: Path) -> None:

@@ -705,3 +705,317 @@ def test_ocr_failure_in_one_lesson_does_not_abort_batch(
     # All 4 lessons attempted (batch did not abort after first failure)
     assert call_count["n"] == 4
     assert result.exit_code == PROCESSING_FAILURE_EXIT_CODE
+
+
+# ── Phase 8 — --resume flag ───────────────────────────────────────────────────
+
+
+def test_resume_skips_all_lessons_when_all_completed(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """After a full successful run, --resume skips every lesson (none has FAILED steps)."""
+    config_file = _write_config(tmp_path, output_root)
+    runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    processed: list[str] = []
+    real_foundation = cli_module.process_lesson_foundation
+
+    def spy_foundation(lesson: Any, force: bool = False) -> Any:
+        processed.append(lesson.slug)
+        return real_foundation(lesson, force=force)
+
+    monkeypatch.setattr(cli_module, "process_lesson_foundation", spy_foundation)
+    result = runner.invoke(
+        app, ["process-course", str(course_dir), "--config", str(config_file), "--resume"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert processed == [], "nenhuma aula deveria ser processada: todas concluidas, --resume ativo"
+
+
+def test_resume_reprocesses_only_lessons_with_failed_step(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """--resume reprocesses only the lesson that has a FAILED entry in its log."""
+    from datetime import datetime
+
+    from aulaforge.checkpoints import PROCESSING_LOG_FILENAME, append_processing_log
+    from aulaforge.discovery import discover_course
+    from aulaforge.models import Status, StepLogEntry
+
+    config_file = _write_config(tmp_path, output_root)
+    runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    course = discover_course(course_dir, output_root)
+    first_lesson = course.lessons[0]
+    now = datetime.now()
+    append_processing_log(
+        first_lesson.output_dir / PROCESSING_LOG_FILENAME,
+        first_lesson.slug,
+        StepLogEntry(
+            step="transcription",
+            status=Status.FAILED,
+            started_at=now,
+            finished_at=now,
+            message="injected failure for resume test",
+        ),
+    )
+
+    processed: list[str] = []
+    real_foundation = cli_module.process_lesson_foundation
+
+    def spy_foundation(lesson: Any, force: bool = False) -> Any:
+        processed.append(lesson.slug)
+        return real_foundation(lesson, force=force)
+
+    monkeypatch.setattr(cli_module, "process_lesson_foundation", spy_foundation)
+    result = runner.invoke(
+        app, ["process-course", str(course_dir), "--config", str(config_file), "--resume"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(processed) == 1, "apenas a aula com FAILED deve ser reprocessada"
+    assert processed[0] == first_lesson.slug
+
+
+def test_resume_processes_course_normally_when_no_log_exists(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """Fresh course with no processing_log.json: --resume processes everything normally."""
+    config_file = _write_config(tmp_path, output_root)
+    result = runner.invoke(
+        app, ["process-course", str(course_dir), "--config", str(config_file), "--resume"]
+    )
+
+    assert result.exit_code == 0, result.output
+    course_output = output_root / course_dir.name
+    lesson_dirs = [p for p in course_output.iterdir() if p.is_dir()]
+    assert len(lesson_dirs) == 4
+
+
+def test_resume_force_flag_overrides_resume(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """--force takes precedence over --resume: all lessons are reprocessed."""
+    config_file = _write_config(tmp_path, output_root)
+    runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    processed: list[str] = []
+    real_foundation = cli_module.process_lesson_foundation
+
+    def spy_foundation(lesson: Any, force: bool = False) -> Any:
+        processed.append(lesson.slug)
+        return real_foundation(lesson, force=force)
+
+    monkeypatch.setattr(cli_module, "process_lesson_foundation", spy_foundation)
+    result = runner.invoke(
+        app,
+        ["process-course", str(course_dir), "--config", str(config_file), "--resume", "--force"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(processed) == 4, "--force deve reprocessar todas as 4 aulas independente de --resume"
+
+
+# ── Phase 8 — Retry ───────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def single_lesson_course_dir(tmp_path: Path) -> Path:
+    """Course with a single lesson for retry tests (avoids multi-lesson counter sharing)."""
+    course = tmp_path / "Curso Retry"
+    course.mkdir()
+    (course / "aula 1 - introducao.mp4").write_bytes(b"video-retry")
+    return course
+
+
+def test_transcription_retry_exhausted_records_failed(
+    single_lesson_course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """When all retry_attempts for transcription fail, the step is FAILED and exit code is 1."""
+    import types
+
+    config_file = _write_config(tmp_path, output_root)
+    monkeypatch.setattr(cli_module, "time", types.SimpleNamespace(sleep=lambda s: None))
+
+    call_count = {"n": 0}
+
+    def always_fail(*args: Any, **kwargs: Any) -> Any:
+        call_count["n"] += 1
+        raise RuntimeError("simulated transcription failure")
+
+    monkeypatch.setattr(cli_module, "process_lesson_transcription", always_fail)
+
+    result = runner.invoke(
+        app, ["process-course", str(single_lesson_course_dir), "--config", str(config_file)]
+    )
+
+    assert result.exit_code == PROCESSING_FAILURE_EXIT_CODE
+    assert call_count["n"] == 3  # retry_attempts default = 3
+
+
+def test_transcription_retry_succeeds_on_last_attempt(
+    single_lesson_course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """Transient transcription failures followed by a success → exit code 0, 3 total calls."""
+    import types
+    from datetime import datetime
+
+    from aulaforge.models import Status, StepLogEntry
+
+    config_file = _write_config(tmp_path, output_root)
+    monkeypatch.setattr(cli_module, "time", types.SimpleNamespace(sleep=lambda s: None))
+
+    call_count = {"n": 0}
+
+    def flaky_transcription(*args: Any, **kwargs: Any) -> Any:
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise RuntimeError("transient failure")
+        now = datetime.now()
+        return ("transcript-text", StepLogEntry(
+            step="transcription",
+            status=Status.COMPLETED,
+            started_at=now,
+            finished_at=now,
+        ))
+
+    monkeypatch.setattr(cli_module, "process_lesson_transcription", flaky_transcription)
+
+    result = runner.invoke(
+        app, ["process-course", str(single_lesson_course_dir), "--config", str(config_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert call_count["n"] == 3  # 2 failures + 1 success = retry_attempts calls
+
+
+def test_transcription_model_not_reloaded_between_retries(
+    single_lesson_course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """Even when transcription retries, the Whisper model is loaded exactly once per run."""
+    import types
+    from datetime import datetime
+
+    from aulaforge.models import Status, StepLogEntry
+
+    config_file = _write_config(tmp_path, output_root)
+    monkeypatch.setattr(cli_module, "time", types.SimpleNamespace(sleep=lambda s: None))
+
+    call_count = {"n": 0}
+
+    def flaky_transcription(*args: Any, **kwargs: Any) -> Any:
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise RuntimeError("transient failure")
+        now = datetime.now()
+        return ("transcript-text", StepLogEntry(
+            step="transcription",
+            status=Status.COMPLETED,
+            started_at=now,
+            finished_at=now,
+        ))
+
+    monkeypatch.setattr(cli_module, "process_lesson_transcription", flaky_transcription)
+
+    runner.invoke(
+        app, ["process-course", str(single_lesson_course_dir), "--config", str(config_file)]
+    )
+
+    assert mock_notes_success.call_count == 1, "modelo Whisper deve ser carregado 1x, nao por retry"
+
+
+def test_notes_retry_exhausted_records_failed(
+    single_lesson_course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """When all retry_attempts for notes fail, the step is FAILED and exit code is 1."""
+    import types
+
+    config_file = _write_config(tmp_path, output_root)
+    monkeypatch.setattr(cli_module, "time", types.SimpleNamespace(sleep=lambda s: None))
+
+    call_count = {"n": 0}
+
+    def always_fail(*args: Any, **kwargs: Any) -> Any:
+        call_count["n"] += 1
+        raise RuntimeError("simulated notes failure")
+
+    monkeypatch.setattr(cli_module, "process_lesson_notes", always_fail)
+
+    result = runner.invoke(
+        app, ["process-course", str(single_lesson_course_dir), "--config", str(config_file)]
+    )
+
+    assert result.exit_code == PROCESSING_FAILURE_EXIT_CODE
+    assert call_count["n"] == 3  # retry_attempts default = 3
+
+
+def test_notes_retry_succeeds_on_last_attempt(
+    single_lesson_course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> None:
+    """Transient notes failures followed by a success → exit code 0, 3 total calls."""
+    import types
+    from datetime import datetime
+
+    from aulaforge.models import Status, StepLogEntry
+
+    config_file = _write_config(tmp_path, output_root)
+    monkeypatch.setattr(cli_module, "time", types.SimpleNamespace(sleep=lambda s: None))
+
+    call_count = {"n": 0}
+
+    def flaky_notes(*args: Any, **kwargs: Any) -> Any:
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise RuntimeError("transient notes failure")
+        now = datetime.now()
+        return ("# nota fake", StepLogEntry(
+            step="notes",
+            status=Status.COMPLETED,
+            started_at=now,
+            finished_at=now,
+        ))
+
+    monkeypatch.setattr(cli_module, "process_lesson_notes", flaky_notes)
+
+    result = runner.invoke(
+        app, ["process-course", str(single_lesson_course_dir), "--config", str(config_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert call_count["n"] == 3  # 2 failures + 1 success = retry_attempts calls

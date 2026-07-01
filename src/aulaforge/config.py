@@ -114,6 +114,7 @@ class OutputsConfig(BaseModel):
     """
 
     enabled: bool = True
+    max_implementation_plan_chars: int | None = None
 
 
 class AulaForgeConfig(BaseSettings):

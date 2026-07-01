@@ -10,7 +10,6 @@ pipeline" just because one step ran.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 from datetime import datetime
@@ -842,45 +841,6 @@ def process_lesson_merge(
     return content, entry
 
 
-def write_batch_summary(course: Course, entries: dict[str, dict[str, StepLogEntry]]) -> None:
-    """Write course-level `batch_log.json` and `batch_report.md` for this run.
-
-    `entries` maps lesson slug -> {step name -> StepLogEntry}, since a lesson
-    can have more than one step (foundation, transcription, ...). Columns are
-    discovered dynamically from whatever steps are actually present, so a
-    future phase adding a new step doesn't require touching this function.
-    """
-    course.output_path.mkdir(parents=True, exist_ok=True)
-    generated_at = datetime.now().isoformat()
-
-    summary = {
-        "course": course.name,
-        "generated_at": generated_at,
-        "lessons": {
-            slug: {step: entry.status.value for step, entry in steps.items()}
-            for slug, steps in entries.items()
-        },
-    }
-    (course.output_path / "batch_log.json").write_text(
-        json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-
-    all_steps = sorted({step for steps in entries.values() for step in steps})
-    header_cols = ["Aula", *(step.capitalize() for step in all_steps)]
-    lines = [
-        f"# Batch report - {course.name}",
-        "",
-        f"Gerado em: {generated_at}",
-        "",
-        f"| {' | '.join(header_cols)} |",
-        f"|{'---|' * len(header_cols)}",
-    ]
-    for slug, steps in entries.items():
-        row = [slug, *(steps[step].status.value if step in steps else "-" for step in all_steps)]
-        lines.append(f"| {' | '.join(row)} |")
-    (course.output_path / "batch_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 # ── Phase 7: Outputs ──────────────────────────────────────────────────────────
 
 
@@ -998,6 +958,7 @@ def process_lesson_outputs(
         merge_raw=merge_raw,
         codes_raw=codes_raw,
         commands_raw=commands_raw,
+        max_implementation_plan_chars=cfg_outputs.max_implementation_plan_chars,
     )
     write_lesson_outputs(lesson.output_dir, files)
 

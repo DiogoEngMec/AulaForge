@@ -101,7 +101,7 @@ def compute_outputs_input_hash(
     payload: dict[str, object] = {
         "version": OUTPUTS_VERSION,
         "config": {
-            "enabled": cfg.enabled,
+            "max_implementation_plan_chars": cfg.max_implementation_plan_chars,
         },
         "inputs": {
             "note": note_raw if note_raw is not None else "no_notes",
@@ -366,6 +366,7 @@ def _gen_implementation_plan(
     codes_raw: str | None,
     commands_raw: str | None,
     timestamp: str,
+    max_chars: int | None = None,
 ) -> str:
     sources = _sources_list(note_raw, None, codes_raw, commands_raw)
     lines: list[str] = [f"# Plano de Implementação — {lesson_title}", ""]
@@ -402,7 +403,14 @@ def _gen_implementation_plan(
     )
     lines.append("")
 
-    return "\n".join(lines)
+    content = "\n".join(lines)
+    if max_chars is not None and len(content) > max_chars:
+        content = content[:max_chars].rstrip()
+        content += (
+            "\n\n_[Conteúdo truncado. Aumente `max_implementation_plan_chars` na config"
+            " para ver o conteúdo completo.]_\n"
+        )
+    return content
 
 
 # ── Main per-lesson builder ───────────────────────────────────────────────────
@@ -415,11 +423,13 @@ def build_lesson_outputs(
     codes_raw: str | None,
     commands_raw: str | None,
     timestamp: str | None = None,
+    max_implementation_plan_chars: int | None = None,
 ) -> dict[str, str]:
     """Build all 7 per-lesson output files as a dict[filename → content].
 
     Every file is generated regardless of which inputs are present; absent
     inputs produce placeholder text inside each relevant section.
+    `max_implementation_plan_chars` truncates 16_IMPLEMENTATION_PLAN.md when set.
     """
     ts = timestamp or datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     return {
@@ -434,7 +444,8 @@ def build_lesson_outputs(
         SKILLS_SUGERIDAS_FILENAME: _gen_skills_sugeridas(lesson_title, note_raw, ts),
         IDEIAS_DE_PROJETOS_FILENAME: _gen_ideias_de_projetos(lesson_title, note_raw, ts),
         IMPLEMENTATION_PLAN_FILENAME: _gen_implementation_plan(
-            lesson_title, note_raw, codes_raw, commands_raw, ts
+            lesson_title, note_raw, codes_raw, commands_raw, ts,
+            max_chars=max_implementation_plan_chars,
         ),
     }
 

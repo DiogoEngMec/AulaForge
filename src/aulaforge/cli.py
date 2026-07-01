@@ -1,7 +1,8 @@
-"""AulaForge CLI — Fases 1–7: foundation, transcrição, notes, Notion, OCR, merge, outputs."""
+"""AulaForge CLI — Fases 1–8: foundation, transcrição, notes, Notion, OCR, merge, outputs."""
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from aulaforge.checkpoints import (
     NOTION_STEP,
     OCR_STEP,
     OUTPUTS_STEP,
+    PROCESSING_LOG_FILENAME,
     TRANSCRIPTION_STEP,
     can_skip_notion_without_network,
     needs_merge_processing,
@@ -30,6 +32,7 @@ from aulaforge.checkpoints import (
     process_lesson_ocr,
     process_lesson_outputs,
     process_lesson_transcription,
+    read_processing_log,
     record_failed_foundation,
     record_failed_step,
     record_merge_skipped_disabled,
@@ -46,7 +49,6 @@ from aulaforge.checkpoints import (
     record_skipped_ocr,
     record_skipped_outputs,
     record_skipped_transcription,
-    write_batch_summary,
 )
 from aulaforge.config import load_config
 from aulaforge.discovery import discover_course
@@ -68,6 +70,7 @@ from aulaforge.outputs import (
     read_lesson_inputs,
     write_course_outputs,
 )
+from aulaforge.reports import write_batch_summary
 from aulaforge.transcription import (
     TIMESTAMPED_TRANSCRIPT_FILENAME,
     check_transcription_dependencies,
@@ -112,6 +115,29 @@ _FORCE_OPTION = typer.Option(
     "--force",
     help="Reprocessa todas as etapas mesmo se o video e as entradas nao mudaram.",
 )
+_RESUME_OPTION = typer.Option(
+    False,
+    "--resume",
+    help=(
+        "Reprocessa apenas aulas que tenham ao menos um step FAILED no processing_log.json. "
+        "Se nao houver processing_log.json, processa normalmente. "
+        "--force tem precedencia sobre --resume."
+    ),
+)
+
+
+def _should_skip_with_resume(lesson_output_dir: Path, lesson_slug: str) -> bool:
+    """Com --resume ativo: True = pular a aula (nenhum step FAILED no log).
+
+    Retorna False (não pular) quando:
+    - processing_log.json não existe (aula nunca processada → processar normalmente);
+    - há ao menos um step FAILED no log.
+    """
+    log_path = lesson_output_dir / PROCESSING_LOG_FILENAME
+    if not log_path.exists():
+        return False
+    log = read_processing_log(log_path, lesson_slug)
+    return not any(entry.status.value == "failed" for entry in log.steps)
 
 
 @app.command("process-course")
@@ -119,6 +145,7 @@ def process_course(
     course_path: Path = _COURSE_PATH_ARGUMENT,
     config: Path | None = _CONFIG_OPTION,
     force: bool = _FORCE_OPTION,
+    resume: bool = _RESUME_OPTION,
 ) -> None:
     """Descobre, ordena, indexa, transcreve e anota as aulas de um curso.
 
@@ -158,7 +185,17 @@ def process_course(
     had_processing_failure = False
     had_dependency_failure = False
 
+    if resume and not effective_force:
+        logger.info("Modo --resume ativo: reprocessa apenas aulas com step FAILED.")
+
     for lesson in course.lessons:
+        # --resume: pula aulas sem step FAILED (exceto se --force também foi passado)
+        if resume and not effective_force and _should_skip_with_resume(
+            lesson.output_dir, lesson.slug
+        ):
+            logger.info("Aula '%s': sem falhas no log; pulada por --resume.", lesson.slug)
+            continue
+
         lesson_entries: dict[str, StepLogEntry] = {}
 
         started_at = datetime.now()
@@ -208,27 +245,55 @@ def process_course(
                 )
                 had_dependency_failure = True
             else:
-                try:
-                    if model is None:
+                # Carrega o modelo uma única vez por batch run (mantido entre retries)
+                if model is None:
+                    try:
                         model = load_whisper_model(cfg.transcription.model)
-                    _, transcription_entry = process_lesson_transcription(
-                        lesson,
-                        model,
-                        info.hash,
-                        cfg.transcription,
-                        cfg.processing.chunk_minutes,
-                        language_hint,
-                    )
-                    lesson_entries[TRANSCRIPTION_STEP] = transcription_entry
-                except Exception as exc:
-                    lesson_entries[TRANSCRIPTION_STEP] = record_failed_step(
-                        lesson, TRANSCRIPTION_STEP, started_at, exc
-                    )
-                    had_processing_failure = True
-                    if not cfg.processing.continue_on_error:
-                        entries[lesson.slug] = lesson_entries
-                        write_batch_summary(course, entries)
-                        raise
+                    except Exception as exc:
+                        lesson_entries[TRANSCRIPTION_STEP] = record_failed_step(
+                            lesson, TRANSCRIPTION_STEP, started_at, exc
+                        )
+                        had_processing_failure = True
+                        if not cfg.processing.continue_on_error:
+                            entries[lesson.slug] = lesson_entries
+                            write_batch_summary(course, entries)
+                            raise
+
+                if model is not None:
+                    _last_exc: Exception | None = None
+                    for _attempt in range(1, cfg.processing.retry_attempts + 1):
+                        try:
+                            _, transcription_entry = process_lesson_transcription(
+                                lesson,
+                                model,
+                                info.hash,
+                                cfg.transcription,
+                                cfg.processing.chunk_minutes,
+                                language_hint,
+                            )
+                            lesson_entries[TRANSCRIPTION_STEP] = transcription_entry
+                            _last_exc = None
+                            break
+                        except Exception as exc:
+                            _last_exc = exc
+                            if _attempt < cfg.processing.retry_attempts:
+                                _wait = 2 * _attempt
+                                logger.warning(
+                                    "Aula '%s' (transcription): tentativa %d/%d falhou: %s. "
+                                    "Aguardando %ds...",
+                                    lesson.slug, _attempt, cfg.processing.retry_attempts,
+                                    exc, _wait,
+                                )
+                                time.sleep(_wait)
+                    if _last_exc is not None:
+                        lesson_entries[TRANSCRIPTION_STEP] = record_failed_step(
+                            lesson, TRANSCRIPTION_STEP, started_at, _last_exc
+                        )
+                        had_processing_failure = True
+                        if not cfg.processing.continue_on_error:
+                            entries[lesson.slug] = lesson_entries
+                            write_batch_summary(course, entries)
+                            raise _last_exc
 
         # --- Phase 3: Notes ---
         notes_started_at = datetime.now()
@@ -276,20 +341,35 @@ def process_course(
                     )
                     had_dependency_failure = True
                 else:
-                    try:
-                        _, notes_entry = process_lesson_notes(
-                            lesson, transcript_text, notes_hash, cfg.llm
-                        )
-                        lesson_entries[NOTES_STEP] = notes_entry
-                    except Exception as exc:
+                    _last_exc = None
+                    for _attempt in range(1, cfg.processing.retry_attempts + 1):
+                        try:
+                            _, notes_entry = process_lesson_notes(
+                                lesson, transcript_text, notes_hash, cfg.llm
+                            )
+                            lesson_entries[NOTES_STEP] = notes_entry
+                            _last_exc = None
+                            break
+                        except Exception as exc:
+                            _last_exc = exc
+                            if _attempt < cfg.processing.retry_attempts:
+                                _wait = 2 * _attempt
+                                logger.warning(
+                                    "Aula '%s' (notes): tentativa %d/%d falhou: %s. "
+                                    "Aguardando %ds...",
+                                    lesson.slug, _attempt, cfg.processing.retry_attempts,
+                                    exc, _wait,
+                                )
+                                time.sleep(_wait)
+                    if _last_exc is not None:
                         lesson_entries[NOTES_STEP] = record_failed_step(
-                            lesson, NOTES_STEP, notes_started_at, exc
+                            lesson, NOTES_STEP, notes_started_at, _last_exc
                         )
                         had_processing_failure = True
                         if not cfg.processing.continue_on_error:
                             entries[lesson.slug] = lesson_entries
                             write_batch_summary(course, entries)
-                            raise
+                            raise _last_exc
 
         # --- Phase 4: Notion ---
         notion_started_at = datetime.now()

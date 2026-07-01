@@ -261,9 +261,10 @@ def test_hash_sentinel_for_none():
 
 
 def test_hash_config_affects_result():
-    cfg_disabled = OutputsConfig(enabled=False)
+    # max_implementation_plan_chars faz parte do payload de hash (B1 fix: enabled não faz)
+    cfg_limited = OutputsConfig(max_implementation_plan_chars=5000)
     h1 = compute_outputs_input_hash(FAKE_NOTE, None, None, None, cfg_default)
-    h2 = compute_outputs_input_hash(FAKE_NOTE, None, None, None, cfg_disabled)
+    h2 = compute_outputs_input_hash(FAKE_NOTE, None, None, None, cfg_limited)
     assert h1 != h2
 
 

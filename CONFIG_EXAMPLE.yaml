@@ -63,3 +63,4 @@ merge:
 
 outputs:
   enabled: true               # habilitado por padrão (sem dependências externas)
+  max_implementation_plan_chars: null  # null = sem limite; ex: 5000 para limitar 16_IMPLEMENTATION_PLAN.md

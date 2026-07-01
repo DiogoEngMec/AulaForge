@@ -106,6 +106,16 @@ class MergeConfig(BaseModel):
     group_minutes: PositiveInt = 10  # agrupamento de blocos no Markdown (minutos)
 
 
+class OutputsConfig(BaseModel):
+    """Phase 7 config: geração dos artefatos finais Claude Code / Codex.
+
+    Habilitado por padrão (sem dependências externas — apenas reformatação de
+    artefatos já gerados pelas fases anteriores).
+    """
+
+    enabled: bool = True
+
+
 class AulaForgeConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AULAFORGE_", extra="ignore")
 
@@ -116,6 +126,7 @@ class AulaForgeConfig(BaseSettings):
     notion: NotionConfig = NotionConfig()
     ocr: OcrConfig = OcrConfig()
     merge: MergeConfig = MergeConfig()
+    outputs: OutputsConfig = OutputsConfig()
 
 
 def resolve_config_path(config_path: Path | None) -> Path | None:

@@ -17,7 +17,14 @@ from datetime import datetime
 from pathlib import Path
 
 from aulaforge.audio import AUDIO_FILENAME, extract_audio
-from aulaforge.config import LlmConfig, MergeConfig, NotionConfig, OcrConfig, TranscriptionConfig
+from aulaforge.config import (
+    LlmConfig,
+    MergeConfig,
+    NotionConfig,
+    OcrConfig,
+    OutputsConfig,
+    TranscriptionConfig,
+)
 from aulaforge.models import (
     Course,
     Lesson,
@@ -52,6 +59,7 @@ NOTES_STEP = "notes"
 NOTION_STEP = "notion"
 OCR_STEP = "ocr"
 MERGE_STEP = "merge"
+OUTPUTS_STEP = "outputs"
 
 _HASH_CHUNK_SIZE = 1024 * 1024  # 1 MiB, keeps memory flat for multi-GB videos
 
@@ -871,3 +879,135 @@ def write_batch_summary(course: Course, entries: dict[str, dict[str, StepLogEntr
         row = [slug, *(steps[step].status.value if step in steps else "-" for step in all_steps)]
         lines.append(f"| {' | '.join(row)} |")
     (course.output_path / "batch_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ── Phase 7: Outputs ──────────────────────────────────────────────────────────
+
+
+def needs_outputs_processing(
+    lesson: Lesson,
+    outputs_hash: str,
+    force: bool = False,
+) -> bool:
+    """Decide whether the outputs step must (re)run for this lesson.
+
+    Reprocesses when: ``--force``; the latest ``"outputs"`` log entry is not
+    done; its source_hash differs from *outputs_hash* (any input file changed);
+    or any of the 7 output files is absent.
+    """
+    from aulaforge.outputs import LESSON_OUTPUT_FILENAMES
+
+    if force:
+        return True
+
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    log = read_processing_log(processing_log_path, lesson.slug)
+    if not _step_log_shows_done(log, OUTPUTS_STEP):
+        return True
+
+    latest = log.latest(OUTPUTS_STEP)
+    if latest is None or latest.source_hash != outputs_hash:
+        return True
+
+    return any(not (lesson.output_dir / f).exists() for f in LESSON_OUTPUT_FILENAMES)
+
+
+def record_skipped_outputs(
+    lesson: Lesson, outputs_hash: str, started_at: datetime
+) -> StepLogEntry:
+    """Log an outputs step that needed no work this run."""
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=OUTPUTS_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message="Outputs já existem e nenhuma entrada mudou.",
+        source_hash=outputs_hash,
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': etapa outputs pulada.", lesson.slug)
+    return entry
+
+
+def record_outputs_skipped_no_inputs(lesson: Lesson, started_at: datetime) -> StepLogEntry:
+    """Log outputs as skipped because none of the four input files are present.
+
+    Not a processing failure — the prerequisite phases are responsible for
+    providing the inputs; records as SKIPPED_UNCHANGED so the batch exit code
+    is not affected.
+    """
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=OUTPUTS_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message=(
+            "Nenhum input disponível (09, 08, 06 e 07 ausentes) — "
+            "execute as fases anteriores antes."
+        ),
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': outputs pulado (sem entradas disponíveis).", lesson.slug)
+    return entry
+
+
+def record_outputs_skipped_disabled(lesson: Lesson, started_at: datetime) -> StepLogEntry:
+    """Log outputs as skipped because outputs.enabled=false in config."""
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=OUTPUTS_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message="Outputs desabilitados na config (outputs.enabled = false).",
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': outputs pulado (desabilitado na config).", lesson.slug)
+    return entry
+
+
+def process_lesson_outputs(
+    lesson: Lesson,
+    outputs_hash: str,
+    note_raw: str | None,
+    merge_raw: str | None,
+    codes_raw: str | None,
+    commands_raw: str | None,
+    cfg_outputs: OutputsConfig,
+) -> tuple[dict[str, str], StepLogEntry]:
+    """Generate all 7 per-lesson output files and record the step outcome.
+
+    The caller must have already decided (via ``needs_outputs_processing``)
+    that this is necessary. No external dependencies are required.
+    Raises on write failure; the caller handles the exception.
+    """
+    from aulaforge.outputs import build_lesson_outputs, write_lesson_outputs
+
+    started_at = datetime.now()
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+
+    files = build_lesson_outputs(
+        lesson_title=lesson.title,
+        note_raw=note_raw,
+        merge_raw=merge_raw,
+        codes_raw=codes_raw,
+        commands_raw=commands_raw,
+    )
+    write_lesson_outputs(lesson.output_dir, files)
+
+    entry = StepLogEntry(
+        step=OUTPUTS_STEP,
+        status=Status.COMPLETED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        source_hash=outputs_hash,
+    )
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': outputs gerados (%d arquivo(s)).", lesson.slug, len(files))
+    return files, entry

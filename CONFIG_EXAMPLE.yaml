@@ -62,10 +62,4 @@ merge:
   group_minutes: 10           # agrupamento de blocos no Markdown (minutos)
 
 outputs:
-  generate_course_overview: true
-  generate_claude_code_context: true
-  generate_codex_context: true
-  generate_prompts: true
-  generate_agent_ideas: true
-  generate_skill_ideas: true
-  generate_project_ideas: true
+  enabled: true               # habilitado por padrão (sem dependências externas)

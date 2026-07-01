@@ -1,4 +1,4 @@
-"""AulaForge CLI — Fases 1–6: foundation, transcrição, notes, Notion, OCR, merge."""
+"""AulaForge CLI — Fases 1–7: foundation, transcrição, notes, Notion, OCR, merge, outputs."""
 
 from __future__ import annotations
 
@@ -14,18 +14,21 @@ from aulaforge.checkpoints import (
     NOTES_STEP,
     NOTION_STEP,
     OCR_STEP,
+    OUTPUTS_STEP,
     TRANSCRIPTION_STEP,
     can_skip_notion_without_network,
     needs_merge_processing,
     needs_notes_processing,
     needs_notion_processing,
     needs_ocr_processing,
+    needs_outputs_processing,
     needs_transcription_processing,
     process_lesson_foundation,
     process_lesson_merge,
     process_lesson_notes,
     process_lesson_notion,
     process_lesson_ocr,
+    process_lesson_outputs,
     process_lesson_transcription,
     record_failed_foundation,
     record_failed_step,
@@ -35,10 +38,13 @@ from aulaforge.checkpoints import (
     record_notion_skipped_disabled,
     record_notion_skipped_no_notes,
     record_ocr_skipped_disabled,
+    record_outputs_skipped_disabled,
+    record_outputs_skipped_no_inputs,
     record_skipped_merge,
     record_skipped_notes,
     record_skipped_notion,
     record_skipped_ocr,
+    record_skipped_outputs,
     record_skipped_transcription,
     write_batch_summary,
 )
@@ -56,6 +62,12 @@ from aulaforge.notion import (
 )
 from aulaforge.ocr import OCR_JSON_FILENAME, check_ocr_dependencies, compute_ocr_input_hash
 from aulaforge.ollama_client import check_ollama_dependencies
+from aulaforge.outputs import (
+    compute_outputs_input_hash,
+    has_any_input,
+    read_lesson_inputs,
+    write_course_outputs,
+)
 from aulaforge.transcription import (
     TIMESTAMPED_TRANSCRIPT_FILENAME,
     check_transcription_dependencies,
@@ -478,9 +490,77 @@ def process_course(
                             write_batch_summary(course, entries)
                             raise
 
+        # --- Phase 7: Outputs ---
+        outputs_started_at = datetime.now()
+        if not cfg.outputs.enabled:
+            lesson_entries[OUTPUTS_STEP] = record_outputs_skipped_disabled(
+                lesson, outputs_started_at
+            )
+        else:
+            note_raw, merge_raw, codes_raw, commands_raw = read_lesson_inputs(lesson)
+            if not has_any_input(note_raw, merge_raw, codes_raw, commands_raw):
+                lesson_entries[OUTPUTS_STEP] = record_outputs_skipped_no_inputs(
+                    lesson, outputs_started_at
+                )
+            else:
+                outputs_hash = compute_outputs_input_hash(
+                    note_raw, merge_raw, codes_raw, commands_raw, cfg.outputs
+                )
+                try:
+                    needs_outputs = needs_outputs_processing(
+                        lesson, outputs_hash, force=effective_force
+                    )
+                except Exception as exc:
+                    lesson_entries[OUTPUTS_STEP] = record_failed_step(
+                        lesson, OUTPUTS_STEP, outputs_started_at, exc
+                    )
+                    entries[lesson.slug] = lesson_entries
+                    had_processing_failure = True
+                    if not cfg.processing.continue_on_error:
+                        write_batch_summary(course, entries)
+                        raise
+                    continue
+
+                if not needs_outputs:
+                    lesson_entries[OUTPUTS_STEP] = record_skipped_outputs(
+                        lesson, outputs_hash, outputs_started_at
+                    )
+                else:
+                    try:
+                        _, outputs_entry = process_lesson_outputs(
+                            lesson,
+                            outputs_hash,
+                            note_raw,
+                            merge_raw,
+                            codes_raw,
+                            commands_raw,
+                            cfg.outputs,
+                        )
+                        lesson_entries[OUTPUTS_STEP] = outputs_entry
+                    except Exception as exc:
+                        lesson_entries[OUTPUTS_STEP] = record_failed_step(
+                            lesson, OUTPUTS_STEP, outputs_started_at, exc
+                        )
+                        had_processing_failure = True
+                        if not cfg.processing.continue_on_error:
+                            entries[lesson.slug] = lesson_entries
+                            write_batch_summary(course, entries)
+                            raise
+
         entries[lesson.slug] = lesson_entries
 
     write_batch_summary(course, entries)
+
+    # --- Course-level outputs (after all lessons) ---
+    if cfg.outputs.enabled:
+        lessons_with_outputs = [
+            lesson
+            for lesson in course.lessons
+            if entries.get(lesson.slug, {}).get(OUTPUTS_STEP) is not None
+            and entries[lesson.slug][OUTPUTS_STEP].status
+            in (Status.COMPLETED, Status.SKIPPED_UNCHANGED)
+        ]
+        write_course_outputs(course, lessons_with_outputs)
 
     all_step_entries = [entry for steps in entries.values() for entry in steps.values()]
     completed = sum(1 for e in all_step_entries if e.status == Status.COMPLETED)

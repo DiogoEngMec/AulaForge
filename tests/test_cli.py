@@ -520,3 +520,188 @@ def test_process_course_skips_dependency_check_when_nothing_needs_transcription(
     result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
 
     assert result.exit_code == 0, result.output
+
+
+# ── OCR CLI tests ─────────────────────────────────────────────────────────────
+
+
+def _write_config_with_ocr(tmp_path: Path, output_root: Path) -> Path:
+    config_file = tmp_path / "aulaforge.yaml"
+    config_file.write_text(
+        f'project:\n  output_dir: "{output_root.as_posix()}"\nocr:\n  enabled: true\n',
+        encoding="utf-8",
+    )
+    return config_file
+
+
+@pytest.fixture
+def mock_ocr_success(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_notes_success: LoadModelSpy,
+) -> LoadModelSpy:
+    """Make the OCR path succeed without real FFmpeg or Tesseract."""
+    from aulaforge.models import OcrFrameResult, StepLogEntry
+
+    monkeypatch.setattr(cli_module, "check_ocr_dependencies", lambda lang: [])
+
+    fake_result = OcrFrameResult(
+        timestamp="00:00:00",
+        frame_path="frames/00-00-00.png",
+        screen_type="other",
+        text="",
+        confidence="low",
+    )
+
+    def _fake_ocr(lesson: object, ocr_hash: str, cfg: object) -> object:
+        from datetime import datetime
+
+        import aulaforge.checkpoints as _chk
+        from aulaforge.checkpoints import OCR_STEP, PROCESSING_LOG_FILENAME
+        from aulaforge.models import Status
+        entry = StepLogEntry(
+            step=OCR_STEP,
+            status=Status.COMPLETED,
+            started_at=datetime.now(),
+            finished_at=datetime.now(),
+            source_hash=ocr_hash,
+        )
+        lesson_obj = lesson  # type: ignore[assignment]
+        _chk.append_processing_log(
+            lesson_obj.output_dir / PROCESSING_LOG_FILENAME,  # type: ignore[attr-defined]
+            lesson_obj.slug,  # type: ignore[attr-defined]
+            entry,
+        )
+        # Create the expected output files so needs_ocr_processing is happy on re-run
+        for name in ("04_OCR_TELA.json", "05_OCR_TELA.md",
+                      "06_CODIGOS_DETECTADOS.md", "07_COMANDOS_TERMINAL.md"):
+            (lesson_obj.output_dir / name).write_text("[]", encoding="utf-8")  # type: ignore[attr-defined]
+        (lesson_obj.output_dir / "frames").mkdir(exist_ok=True)  # type: ignore[attr-defined]
+        return [fake_result], entry
+
+    monkeypatch.setattr(cli_module, "process_lesson_ocr", _fake_ocr)
+    return mock_notes_success
+
+
+def test_ocr_skipped_when_disabled(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    mock_notes_success: LoadModelSpy,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With ocr.enabled=false (default), check_ocr_dependencies must never be called."""
+    config_file = _write_config(tmp_path, output_root)
+
+    def boom(lang: str) -> list[str]:
+        raise AssertionError("check_ocr_dependencies nao deve ser chamado quando disabled")
+
+    monkeypatch.setattr(cli_module, "check_ocr_dependencies", boom)
+
+    result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+    assert result.exit_code == 0, result.output
+
+
+def test_ocr_dependency_missing_gives_exit_code_2(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    mock_notes_success: LoadModelSpy,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing Tesseract => exit code 2; batch must continue (other lessons still run)."""
+    config_file = _write_config_with_ocr(tmp_path, output_root)
+    monkeypatch.setattr(
+        cli_module,
+        "check_ocr_dependencies",
+        lambda lang: ["tesseract nao encontrado no PATH"],
+    )
+
+    result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+    assert result.exit_code == DEPENDENCY_MISSING_EXIT_CODE
+
+
+def test_ocr_processes_all_lessons_when_enabled(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    mock_ocr_success: LoadModelSpy,
+) -> None:
+    """When OCR is enabled and mocked, all 4 lessons get a COMPLETED ocr entry."""
+    from aulaforge.checkpoints import OCR_STEP, PROCESSING_LOG_FILENAME, read_processing_log
+    from aulaforge.discovery import discover_course
+    from aulaforge.models import Status
+
+    config_file = tmp_path / "cfg.yaml"
+    config_file.write_text(
+        f'project:\n  output_dir: "{output_root.as_posix()}"\nocr:\n  enabled: true\n',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+    assert result.exit_code == 0, result.output
+
+    # Each lesson's processing_log should have a completed OCR entry
+    course = discover_course(course_dir, output_root)
+    for lesson in course.lessons:
+        log = read_processing_log(lesson.output_dir / PROCESSING_LOG_FILENAME, lesson.slug)
+        ocr_entry = log.latest(OCR_STEP)
+        assert ocr_entry is not None
+        assert ocr_entry.status == Status.COMPLETED
+
+
+def test_ocr_skipped_on_second_run_when_nothing_changed(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    mock_ocr_success: LoadModelSpy,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a successful OCR run, the second run skips without calling check_ocr_dependencies."""
+    config_file = tmp_path / "cfg.yaml"
+    config_file.write_text(
+        f'project:\n  output_dir: "{output_root.as_posix()}"\nocr:\n  enabled: true\n',
+        encoding="utf-8",
+    )
+
+    # First run: OCR completes
+    result1 = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+    assert result1.exit_code == 0, result1.output
+
+    # Second run: nothing changed; check_ocr_dependencies must NOT be called
+    def boom(lang: str) -> list[str]:
+        raise AssertionError("check_ocr_dependencies nao deve ser chamado no segundo run")
+
+    monkeypatch.setattr(cli_module, "check_ocr_dependencies", boom)
+
+    result2 = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+    assert result2.exit_code == 0, result2.output
+
+
+def test_ocr_failure_in_one_lesson_does_not_abort_batch(
+    course_dir: Path,
+    output_root: Path,
+    tmp_path: Path,
+    mock_notes_success: LoadModelSpy,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An OCR error on one lesson must not abort the entire batch."""
+    config_file = tmp_path / "cfg.yaml"
+    config_file.write_text(
+        f'project:\n  output_dir: "{output_root.as_posix()}"\nocr:\n  enabled: true\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_module, "check_ocr_dependencies", lambda lang: [])
+
+    call_count = {"n": 0}
+
+    def flaky_ocr(lesson: object, ocr_hash: str, cfg: object) -> object:
+        call_count["n"] += 1
+        raise RuntimeError("ocr explodiu")
+
+    monkeypatch.setattr(cli_module, "process_lesson_ocr", flaky_ocr)
+
+    result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
+
+    # All 4 lessons attempted (batch did not abort after first failure)
+    assert call_count["n"] == 4
+    assert result.exit_code == PROCESSING_FAILURE_EXIT_CODE

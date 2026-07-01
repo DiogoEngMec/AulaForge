@@ -11,6 +11,7 @@ import pytest
 from aulaforge.checkpoints import (
     NOTES_STEP,
     NOTION_STEP,
+    OCR_STEP,
     PROCESSING_LOG_FILENAME,
     SOURCE_INFO_FILENAME,
     TRANSCRIPTION_STEP,
@@ -18,10 +19,12 @@ from aulaforge.checkpoints import (
     needs_foundation_processing,
     needs_notes_processing,
     needs_notion_processing,
+    needs_ocr_processing,
     needs_transcription_processing,
     process_lesson_foundation,
     process_lesson_notes,
     process_lesson_notion,
+    process_lesson_ocr,
     process_lesson_transcription,
     read_processing_log,
     record_failed_foundation,
@@ -29,12 +32,14 @@ from aulaforge.checkpoints import (
     record_notes_skipped_no_transcript,
     record_notion_skipped_disabled,
     record_notion_skipped_no_notes,
+    record_ocr_skipped_disabled,
     record_skipped_notes,
     record_skipped_notion,
+    record_skipped_ocr,
     record_skipped_transcription,
     write_batch_summary,
 )
-from aulaforge.config import LlmConfig, NotionConfig, TranscriptionConfig
+from aulaforge.config import LlmConfig, NotionConfig, OcrConfig, TranscriptionConfig
 from aulaforge.discovery import discover_course
 from aulaforge.models import NotionLessonInfo, NotionPageInfo, Status
 
@@ -704,4 +709,210 @@ def test_write_batch_summary_renders_notion_column(
 
     report = (course.output_path / "batch_report.md").read_text(encoding="utf-8")
     assert "Notion" in report
+    assert "skipped_unchanged" in report
+
+
+# ── OCR checkpoint tests ───────────────────────────────────────────────────────
+
+
+def _make_ocr_output_files(output_dir: Path) -> None:
+    """Create the 4 expected OCR output files."""
+    for name in ("04_OCR_TELA.json", "05_OCR_TELA.md",
+                  "06_CODIGOS_DETECTADOS.md", "07_COMANDOS_TERMINAL.md"):
+        (output_dir / name).write_text("content", encoding="utf-8")
+
+
+def test_record_skipped_ocr_writes_correct_entry(
+    course_dir: Path, output_root: Path
+) -> None:
+    from aulaforge.discovery import discover_course
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+
+    entry = record_skipped_ocr(lesson, "ocrhash123", datetime.now())
+    assert entry.status == Status.SKIPPED_UNCHANGED
+    assert entry.step == OCR_STEP
+    assert entry.source_hash == "ocrhash123"
+
+
+def test_record_ocr_skipped_disabled_writes_correct_entry(
+    course_dir: Path, output_root: Path
+) -> None:
+    from aulaforge.discovery import discover_course
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+
+    entry = record_ocr_skipped_disabled(lesson, datetime.now())
+    assert entry.status == Status.SKIPPED_UNCHANGED
+    assert entry.step == OCR_STEP
+    assert entry.source_hash is None
+
+
+def test_needs_ocr_processing_true_when_no_log(
+    course_dir: Path, output_root: Path
+) -> None:
+    from aulaforge.discovery import discover_course
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+
+    assert needs_ocr_processing(lesson, "somehash", OcrConfig()) is True
+
+
+def test_needs_ocr_processing_false_when_all_ok(
+    course_dir: Path, output_root: Path
+) -> None:
+    from aulaforge.discovery import discover_course
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    _make_ocr_output_files(lesson.output_dir)
+    (lesson.output_dir / "frames").mkdir()
+
+    record_skipped_ocr(lesson, "ocrhash", datetime.now())
+    assert needs_ocr_processing(lesson, "ocrhash", OcrConfig()) is False
+
+
+def test_needs_ocr_processing_true_when_hash_changes(
+    course_dir: Path, output_root: Path
+) -> None:
+    from aulaforge.discovery import discover_course
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    _make_ocr_output_files(lesson.output_dir)
+    (lesson.output_dir / "frames").mkdir()
+
+    record_skipped_ocr(lesson, "old_hash", datetime.now())
+    assert needs_ocr_processing(lesson, "new_hash", OcrConfig()) is True
+
+
+def test_needs_ocr_processing_true_when_output_file_missing(
+    course_dir: Path, output_root: Path
+) -> None:
+    from aulaforge.discovery import discover_course
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    _make_ocr_output_files(lesson.output_dir)
+    (lesson.output_dir / "frames").mkdir()
+    record_skipped_ocr(lesson, "ocrhash", datetime.now())
+
+    # Delete one output file
+    (lesson.output_dir / "04_OCR_TELA.json").unlink()
+    assert needs_ocr_processing(lesson, "ocrhash", OcrConfig()) is True
+
+
+def test_needs_ocr_processing_true_when_frames_dir_missing_and_save_enabled(
+    course_dir: Path, output_root: Path
+) -> None:
+    from aulaforge.discovery import discover_course
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    _make_ocr_output_files(lesson.output_dir)
+    # No frames dir
+
+    record_skipped_ocr(lesson, "ocrhash", datetime.now())
+    cfg = OcrConfig(save_screenshots_local=True)
+    assert needs_ocr_processing(lesson, "ocrhash", cfg) is True
+
+
+def test_needs_ocr_processing_false_when_frames_absent_but_save_disabled(
+    course_dir: Path, output_root: Path
+) -> None:
+    from aulaforge.discovery import discover_course
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    _make_ocr_output_files(lesson.output_dir)
+    # No frames dir, but save_screenshots_local=False
+
+    record_skipped_ocr(lesson, "ocrhash", datetime.now())
+    cfg = OcrConfig(save_screenshots_local=False)
+    assert needs_ocr_processing(lesson, "ocrhash", cfg) is False
+
+
+def test_needs_ocr_processing_true_when_force(
+    course_dir: Path, output_root: Path
+) -> None:
+    from aulaforge.discovery import discover_course
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+    _make_ocr_output_files(lesson.output_dir)
+    (lesson.output_dir / "frames").mkdir()
+    record_skipped_ocr(lesson, "ocrhash", datetime.now())
+
+    assert needs_ocr_processing(lesson, "ocrhash", OcrConfig(), force=True) is True
+
+
+def test_process_lesson_ocr_completes_and_logs(
+    course_dir: Path, output_root: Path
+) -> None:
+    """process_lesson_ocr records a COMPLETED log entry.
+
+    Patches the heavy work in aulaforge.ocr (the lazy-import source) so no
+    real FFmpeg or Tesseract binary is required.
+    """
+    from unittest.mock import patch
+
+    from aulaforge.models import OcrFrameResult
+
+    fake_result = OcrFrameResult(
+        timestamp="00:00:00",
+        frame_path="frames/00-00-00.png",
+        screen_type="other",
+        text="",
+        confidence="low",
+    )
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    process_lesson_foundation(lesson)
+
+    # Patch the heavy operations at their definition site in aulaforge.ocr
+    with (
+        patch("aulaforge.ocr.process_lesson_ocr_frames", return_value=[fake_result]),
+        patch("aulaforge.ocr.write_ocr_json"),
+        patch("aulaforge.ocr.write_ocr_md"),
+        patch("aulaforge.ocr.write_codes_md"),
+        patch("aulaforge.ocr.write_commands_md"),
+    ):
+        results, entry = process_lesson_ocr(lesson, "ocrhash", OcrConfig())
+
+    assert entry.status == Status.COMPLETED
+    assert entry.step == OCR_STEP
+    assert entry.source_hash == "ocrhash"
+    assert results == [fake_result]
+
+
+def test_write_batch_summary_renders_ocr_column(
+    course_dir: Path, output_root: Path
+) -> None:
+    from aulaforge.discovery import discover_course
+
+    course = discover_course(course_dir, output_root)
+    lesson = course.lessons[0]
+    _, foundation_entry = process_lesson_foundation(lesson)
+    ocr_entry = record_skipped_ocr(lesson, "hash", datetime.now())
+
+    write_batch_summary(
+        course,
+        {lesson.slug: {"foundation": foundation_entry, OCR_STEP: ocr_entry}},
+    )
+
+    report = (course.output_path / "batch_report.md").read_text(encoding="utf-8")
+    assert "Ocr" in report
     assert "skipped_unchanged" in report

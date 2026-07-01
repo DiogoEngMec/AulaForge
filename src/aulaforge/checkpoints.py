@@ -17,11 +17,12 @@ from datetime import datetime
 from pathlib import Path
 
 from aulaforge.audio import AUDIO_FILENAME, extract_audio
-from aulaforge.config import LlmConfig, NotionConfig, TranscriptionConfig
+from aulaforge.config import LlmConfig, NotionConfig, OcrConfig, TranscriptionConfig
 from aulaforge.models import (
     Course,
     Lesson,
     NotionPageInfo,
+    OcrFrameResult,
     ProcessingLog,
     SourceInfo,
     Status,
@@ -49,6 +50,7 @@ FOUNDATION_STEP = "foundation"
 TRANSCRIPTION_STEP = "transcription"
 NOTES_STEP = "notes"
 NOTION_STEP = "notion"
+OCR_STEP = "ocr"
 
 _HASH_CHUNK_SIZE = 1024 * 1024  # 1 MiB, keeps memory flat for multi-GB videos
 
@@ -579,6 +581,126 @@ def process_lesson_notion(
     append_processing_log(processing_log_path, lesson.slug, entry)
     logger.info("Aula '%s': sincronizada com o Notion.", lesson.slug)
     return page_info, entry
+
+
+def needs_ocr_processing(
+    lesson: Lesson,
+    ocr_input_hash: str,
+    cfg_ocr: OcrConfig,
+    force: bool = False,
+) -> bool:
+    """Decide whether the OCR step must (re)run for this lesson.
+
+    Reprocesses when: ``--force``; the latest ``"ocr"`` log entry is not done;
+    its source_hash differs from *ocr_input_hash* (video, fps, lang or any
+    other config change); any of the four output files is missing; or the
+    ``frames/`` directory is absent when ``save_screenshots_local=True``.
+    """
+    from aulaforge.ocr import (
+        CODES_MD_FILENAME,
+        COMMANDS_MD_FILENAME,
+        OCR_JSON_FILENAME,
+        OCR_MD_FILENAME,
+    )
+    from aulaforge.video_frames import FRAMES_DIR_NAME
+
+    if force:
+        return True
+
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    log = read_processing_log(processing_log_path, lesson.slug)
+    if not _step_log_shows_done(log, OCR_STEP):
+        return True
+
+    latest = log.latest(OCR_STEP)
+    if latest is None or latest.source_hash != ocr_input_hash:
+        return True
+
+    for filename in (OCR_JSON_FILENAME, OCR_MD_FILENAME, CODES_MD_FILENAME, COMMANDS_MD_FILENAME):
+        if not (lesson.output_dir / filename).exists():
+            return True
+
+    return cfg_ocr.save_screenshots_local and not (lesson.output_dir / FRAMES_DIR_NAME).exists()
+
+
+def record_skipped_ocr(
+    lesson: Lesson, ocr_hash: str, started_at: datetime
+) -> StepLogEntry:
+    """Log an OCR step that needed no work this run."""
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=OCR_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message="OCR ja existe e nenhuma entrada mudou.",
+        source_hash=ocr_hash,
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': etapa ocr pulada.", lesson.slug)
+    return entry
+
+
+def record_ocr_skipped_disabled(lesson: Lesson, started_at: datetime) -> StepLogEntry:
+    """Log OCR as skipped because ocr.enabled=false in config."""
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+    entry = StepLogEntry(
+        step=OCR_STEP,
+        status=Status.SKIPPED_UNCHANGED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        message="OCR desabilitado na config (ocr.enabled = false).",
+    )
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info("Aula '%s': ocr pulado (desabilitado na config).", lesson.slug)
+    return entry
+
+
+def process_lesson_ocr(
+    lesson: Lesson,
+    ocr_input_hash: str,
+    cfg_ocr: OcrConfig,
+) -> tuple[list[OcrFrameResult], StepLogEntry]:
+    """Run OCR for one lesson and record the step outcome.
+
+    The caller must have already decided (via ``needs_ocr_processing``) that
+    this is necessary and verified OCR dependencies are available via
+    ``ocr.check_ocr_dependencies``.  This function does not check availability
+    itself, by design — checks only happen once per batch run.
+    """
+    from aulaforge.ocr import (
+        process_lesson_ocr_frames,
+        write_codes_md,
+        write_commands_md,
+        write_ocr_json,
+        write_ocr_md,
+    )
+
+    started_at = datetime.now()
+    lesson.output_dir.mkdir(parents=True, exist_ok=True)
+    processing_log_path = lesson.output_dir / PROCESSING_LOG_FILENAME
+
+    results = process_lesson_ocr_frames(lesson.video_path, lesson.output_dir, cfg_ocr)
+
+    write_ocr_json(lesson.output_dir, results)
+    write_ocr_md(lesson.output_dir, results)
+    write_codes_md(lesson.output_dir, results)
+    write_commands_md(lesson.output_dir, results)
+
+    entry = StepLogEntry(
+        step=OCR_STEP,
+        status=Status.COMPLETED,
+        started_at=started_at,
+        finished_at=datetime.now(),
+        source_hash=ocr_input_hash,
+    )
+    append_processing_log(processing_log_path, lesson.slug, entry)
+    logger.info(
+        "Aula '%s': OCR concluido (%d frame(s) processados).", lesson.slug, len(results)
+    )
+    return results, entry
 
 
 def write_batch_summary(course: Course, entries: dict[str, dict[str, StepLogEntry]]) -> None:

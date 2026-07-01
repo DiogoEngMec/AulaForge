@@ -94,6 +94,24 @@ class Course(BaseModel):
     lessons: list[Lesson] = Field(default_factory=list)
 
 
+class OcrFrameResult(BaseModel):
+    """OCR result for a single video frame, matching DATA_CONTRACTS.md schema.
+
+    `timestamp` uses 'HH:MM:SS' for display; `frame_path` is relative to the
+    lesson output directory (e.g. 'frames/00-12-15.png', forward-slash portable).
+    `detected_commands` extends the documented schema to capture terminal lines
+    separately from generic code blocks.
+    """
+
+    timestamp: str
+    frame_path: str
+    screen_type: str
+    text: str
+    detected_code: str | None = None
+    detected_commands: str | None = None
+    confidence: str
+
+
 class NotionLessonInfo(BaseModel):
     """Notion sync bookkeeping for a single lesson's toggle block."""
 

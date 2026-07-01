@@ -52,6 +52,28 @@ class LlmConfig(BaseModel):
     max_input_chars: int = 10000
 
 
+class OcrConfig(BaseModel):
+    """Phase 5 OCR config.
+
+    Disabled by default because frame extraction + Tesseract can be slow for
+    long videos. The user must install `aulaforge[ocr]` and have Tesseract on
+    PATH before enabling this.
+    """
+
+    enabled: bool = False
+    engine: str = "local"
+    frame_interval_seconds: int = 5
+    lang: str = "por+eng"
+    min_text_change_chars: int = 30
+    save_screenshots_local: bool = True
+    send_screenshots_to_notion: bool = False
+    show_low_confidence_code_in_notion: bool = True
+    detect_code: bool = True
+    detect_terminal: bool = True
+    detect_screen_type: bool = True
+    preprocess_with_opencv: bool = True
+
+
 class NotionConfig(BaseModel):
     """Phase 4 config. `enabled` defaults to False: Notion sync is opt-in until
 
@@ -84,6 +106,7 @@ class AulaForgeConfig(BaseSettings):
     transcription: TranscriptionConfig = TranscriptionConfig()
     llm: LlmConfig = LlmConfig()
     notion: NotionConfig = NotionConfig()
+    ocr: OcrConfig = OcrConfig()
 
 
 def resolve_config_path(config_path: Path | None) -> Path | None:

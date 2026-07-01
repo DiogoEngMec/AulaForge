@@ -1,4 +1,4 @@
-"""AulaForge CLI (Fase 1: foundation; Fase 2: transcricao; Fase 3: notes; Fase 4: notion)."""
+"""AulaForge CLI — Fases 1–5: foundation, transcrição, notes, Notion, OCR."""
 
 from __future__ import annotations
 
@@ -12,22 +12,27 @@ from aulaforge.checkpoints import (
     FOUNDATION_STEP,
     NOTES_STEP,
     NOTION_STEP,
+    OCR_STEP,
     TRANSCRIPTION_STEP,
     can_skip_notion_without_network,
     needs_notes_processing,
     needs_notion_processing,
+    needs_ocr_processing,
     needs_transcription_processing,
     process_lesson_foundation,
     process_lesson_notes,
     process_lesson_notion,
+    process_lesson_ocr,
     process_lesson_transcription,
     record_failed_foundation,
     record_failed_step,
     record_notes_skipped_no_transcript,
     record_notion_skipped_disabled,
     record_notion_skipped_no_notes,
+    record_ocr_skipped_disabled,
     record_skipped_notes,
     record_skipped_notion,
+    record_skipped_ocr,
     record_skipped_transcription,
     write_batch_summary,
 )
@@ -42,6 +47,7 @@ from aulaforge.notion import (
     compute_notion_input_hash,
     get_note_for_sync,
 )
+from aulaforge.ocr import check_ocr_dependencies, compute_ocr_input_hash
 from aulaforge.ollama_client import check_ollama_dependencies
 from aulaforge.transcription import (
     check_transcription_dependencies,
@@ -125,6 +131,7 @@ def process_course(
     dependency_errors: list[str] | None = None
     ollama_errors: list[str] | None = None
     notion_availability: NotionAvailability | None = None
+    ocr_dependency_errors: list[str] | None = None
     model = None
 
     entries: dict[str, dict[str, StepLogEntry]] = {}
@@ -356,6 +363,59 @@ def process_course(
                                     entries[lesson.slug] = lesson_entries
                                     write_batch_summary(course, entries)
                                     raise
+
+        # --- Phase 5: OCR ---
+        ocr_started_at = datetime.now()
+        if not cfg.ocr.enabled:
+            lesson_entries[OCR_STEP] = record_ocr_skipped_disabled(lesson, ocr_started_at)
+        else:
+            ocr_input_hash = compute_ocr_input_hash(info.hash, cfg.ocr)
+            try:
+                needs_ocr = needs_ocr_processing(
+                    lesson, ocr_input_hash, cfg.ocr, force=effective_force
+                )
+            except Exception as exc:
+                lesson_entries[OCR_STEP] = record_failed_step(
+                    lesson, OCR_STEP, ocr_started_at, exc
+                )
+                entries[lesson.slug] = lesson_entries
+                had_processing_failure = True
+                if not cfg.processing.continue_on_error:
+                    write_batch_summary(course, entries)
+                    raise
+                continue
+
+            if not needs_ocr:
+                lesson_entries[OCR_STEP] = record_skipped_ocr(
+                    lesson, ocr_input_hash, ocr_started_at
+                )
+            else:
+                if ocr_dependency_errors is None:
+                    ocr_dependency_errors = check_ocr_dependencies(cfg.ocr.lang)
+
+                if ocr_dependency_errors:
+                    lesson_entries[OCR_STEP] = record_failed_step(
+                        lesson,
+                        OCR_STEP,
+                        ocr_started_at,
+                        RuntimeError("; ".join(ocr_dependency_errors)),
+                    )
+                    had_dependency_failure = True
+                else:
+                    try:
+                        _, ocr_entry = process_lesson_ocr(
+                            lesson, ocr_input_hash, cfg.ocr
+                        )
+                        lesson_entries[OCR_STEP] = ocr_entry
+                    except Exception as exc:
+                        lesson_entries[OCR_STEP] = record_failed_step(
+                            lesson, OCR_STEP, ocr_started_at, exc
+                        )
+                        had_processing_failure = True
+                        if not cfg.processing.continue_on_error:
+                            entries[lesson.slug] = lesson_entries
+                            write_batch_summary(course, entries)
+                            raise
 
         entries[lesson.slug] = lesson_entries
 

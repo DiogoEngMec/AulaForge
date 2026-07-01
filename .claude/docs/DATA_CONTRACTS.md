@@ -35,6 +35,7 @@ Use stable JSON/Markdown outputs so each step can resume.
   "screen_type": "vscode",
   "text": "...",
   "detected_code": "...",
+  "detected_commands": "...",
   "confidence": "medium"
 }
 ```

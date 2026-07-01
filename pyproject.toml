@@ -69,3 +69,7 @@ warn_unused_configs = true
 [[tool.mypy.overrides]]
 module = ["ffmpeg.*", "whisper.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pytesseract.*", "cv2.*", "PIL.*"]
+ignore_missing_imports = true

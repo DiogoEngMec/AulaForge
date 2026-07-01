@@ -22,15 +22,18 @@ transcription:
   send_raw_to_notion: false
 
 ocr:
-  enabled: true
+  enabled: false              # OCR pode ser lento; opt-in manual
   engine: "local"
-  frame_interval_seconds: 5
+  frame_interval_seconds: 5  # 1 frame a cada N segundos
+  lang: "por+eng"             # idiomas Tesseract (use + para múltiplos)
+  min_text_change_chars: 30   # chars novos mínimos para não deduplicar frame
   save_screenshots_local: true
   send_screenshots_to_notion: false
   show_low_confidence_code_in_notion: true
   detect_code: true
   detect_terminal: true
   detect_screen_type: true
+  preprocess_with_opencv: true  # binarização; requer pip install aulaforge[ocr]
 
 llm:
   provider: "ollama"

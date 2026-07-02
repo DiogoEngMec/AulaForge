@@ -10,6 +10,9 @@ import aulaforge.notes as notes_module
 from aulaforge.config import LlmConfig
 from aulaforge.models import Lesson
 
+# A note long enough to pass validate_note_content.
+_VALID_NOTE = "# Aula Teste\n\n" + "Conteudo estruturado da aula. " * 10
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -160,11 +163,11 @@ def test_generate_lesson_note_single_call_when_transcript_fits(
         max_retries: int,
     ) -> str:
         call_log.append(user_message[:20])
-        return "# Nota"
+        return _VALID_NOTE
 
     monkeypatch.setattr(notes_module, "generate_note", fake_generate)
     result = notes_module.generate_lesson_note("Aula 1", "texto curto", cfg)
-    assert result == "# Nota"
+    assert result == _VALID_NOTE
     assert len(call_log) == 1
 
 
@@ -183,7 +186,7 @@ def test_generate_lesson_note_chunked_path_used_for_long_transcript(
         max_retries: int,
     ) -> str:
         call_log.append(f"call_{len(call_log) + 1}")
-        return f"resposta_{len(call_log)}"
+        return _VALID_NOTE
 
     monkeypatch.setattr(notes_module, "generate_note", fake_generate)
     block1 = "## Bloco 1\n" + "a" * 100
@@ -192,7 +195,7 @@ def test_generate_lesson_note_chunked_path_used_for_long_transcript(
     result = notes_module.generate_lesson_note("Aula X", text, cfg)
     # 2 partial + 1 consolidation = 3 total calls
     assert len(call_log) == 3
-    assert result == "resposta_3"
+    assert result == _VALID_NOTE
 
 
 def test_generate_lesson_note_includes_no_think_in_single_path(
@@ -210,7 +213,7 @@ def test_generate_lesson_note_includes_no_think_in_single_path(
         max_retries: int,
     ) -> str:
         captured_user_messages.append(user_message)
-        return "nota"
+        return _VALID_NOTE
 
     monkeypatch.setattr(notes_module, "generate_note", fake_generate)
     notes_module.generate_lesson_note("Test", "texto", cfg)
@@ -232,7 +235,7 @@ def test_generate_lesson_note_includes_no_think_in_chunked_path(
         max_retries: int,
     ) -> str:
         captured_user_messages.append(user_message)
-        return "nota"
+        return _VALID_NOTE
 
     monkeypatch.setattr(notes_module, "generate_note", fake_generate)
     block1 = "## Bloco 1\n" + "a" * 100
@@ -256,9 +259,95 @@ def test_generate_lesson_note_passes_model_and_temperature(
         max_retries: int,
     ) -> str:
         captured.append({"model": model, "temperature": temperature})
-        return "ok"
+        return _VALID_NOTE
 
     monkeypatch.setattr(notes_module, "generate_note", fake_generate)
     notes_module.generate_lesson_note("Test", "texto", cfg)
     assert captured[0]["model"] == "qwen3:7b"
     assert captured[0]["temperature"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# validate_note_content
+# ---------------------------------------------------------------------------
+
+
+def test_validate_note_content_passes_for_long_content() -> None:
+    notes_module.validate_note_content("x" * 200)
+
+
+def test_validate_note_content_raises_for_empty_string() -> None:
+    with pytest.raises(RuntimeError, match="vazia ou curta demais"):
+        notes_module.validate_note_content("")
+
+
+def test_validate_note_content_raises_for_whitespace_only() -> None:
+    with pytest.raises(RuntimeError, match="vazia ou curta demais"):
+        notes_module.validate_note_content("   \n\n\t  ")
+
+
+def test_validate_note_content_raises_for_below_threshold() -> None:
+    with pytest.raises(RuntimeError, match="vazia ou curta demais"):
+        notes_module.validate_note_content("x" * 199)
+
+
+def test_validate_note_content_strips_surrounding_whitespace_for_count() -> None:
+    # 200 'x' surrounded by whitespace still counts as 200 useful chars.
+    notes_module.validate_note_content(" \n" + "x" * 200 + "\n ")
+
+
+# ---------------------------------------------------------------------------
+# generate_lesson_note — empty / short Ollama response triggers RuntimeError
+# ---------------------------------------------------------------------------
+
+
+def test_generate_lesson_note_raises_on_empty_ollama_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = LlmConfig(max_input_chars=99999)
+    monkeypatch.setattr(notes_module, "generate_note", lambda **_kw: "")
+    with pytest.raises(RuntimeError, match="vazia ou curta demais"):
+        notes_module.generate_lesson_note("Aula 1", "texto", cfg)
+
+
+def test_generate_lesson_note_raises_on_think_tags_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = LlmConfig(max_input_chars=99999)
+    # After strip_thinking_tags removes the block, the remainder is empty.
+    monkeypatch.setattr(notes_module, "generate_note", lambda **_kw: "")
+    with pytest.raises(RuntimeError, match="vazia ou curta demais"):
+        notes_module.generate_lesson_note("Aula 1", "texto", cfg)
+
+
+def test_generate_lesson_note_raises_when_response_below_min_chars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = LlmConfig(max_input_chars=99999)
+    short = "# Titulo\n" + "x" * 50  # well below 200 stripped chars
+    monkeypatch.setattr(notes_module, "generate_note", lambda **_kw: short)
+    with pytest.raises(RuntimeError, match="vazia ou curta demais"):
+        notes_module.generate_lesson_note("Aula 1", "texto", cfg)
+
+
+def test_generate_lesson_note_valid_file_not_overwritten_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Existing note file must survive when Ollama returns empty content."""
+    from aulaforge.checkpoints import process_lesson_notes
+
+    lesson = _make_lesson(tmp_path)
+    lesson.output_dir.mkdir(parents=True)
+
+    # Write a valid previous note.
+    note_path = lesson.output_dir / notes_module.NOTES_FILENAME
+    note_path.write_text(_VALID_NOTE, encoding="utf-8")
+
+    cfg = LlmConfig(max_input_chars=99999)
+    monkeypatch.setattr(notes_module, "generate_note", lambda **_kw: "")
+
+    with pytest.raises(RuntimeError, match="vazia ou curta demais"):
+        process_lesson_notes(lesson, "transcript", "hash123", cfg)
+
+    # The previous valid file must be untouched.
+    assert note_path.read_text(encoding="utf-8") == _VALID_NOTE

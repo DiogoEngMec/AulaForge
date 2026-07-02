@@ -24,6 +24,10 @@ NOTES_FILENAME = "09_ANOTACAO_NOTION.md"
 # notes cached under the previous prompt are automatically regenerated.
 NOTES_PROMPT_VERSION = "v1"
 
+# Minimum number of non-whitespace characters required for a note to be valid.
+# Responses below this threshold are treated as empty/malformed and trigger retry.
+NOTE_MIN_CHARS = 200
+
 # ---------------------------------------------------------------------------
 # Prompt templates
 # ---------------------------------------------------------------------------
@@ -169,6 +173,21 @@ _Comandos de Terminal: disponivel na Fase 5 (OCR)._"""
 # ---------------------------------------------------------------------------
 
 
+def validate_note_content(content: str) -> None:
+    """Raise RuntimeError when Ollama returned an unusably short response.
+
+    The CLI retry loop catches RuntimeError from process_lesson_notes, so
+    raising here activates the existing retry/backoff without any extra
+    wiring.
+    """
+    if len(content.strip()) < NOTE_MIN_CHARS:
+        raise RuntimeError(
+            f"Anotacao gerada esta vazia ou curta demais "
+            f"({len(content.strip())} chars, minimo {NOTE_MIN_CHARS}); "
+            "o Ollama pode ter retornado resposta invalida."
+        )
+
+
 def get_transcript_for_notes(lesson: Lesson) -> str | None:
     """Read the best available transcript for this lesson.
 
@@ -244,8 +263,11 @@ def generate_lesson_note(
     """
     chunks = split_at_block_boundaries(transcript_text, cfg_llm.max_input_chars)
     if len(chunks) == 1:
-        return _generate_single(lesson_title, chunks[0], cfg_llm)
-    return _generate_chunked(lesson_title, chunks, cfg_llm)
+        note = _generate_single(lesson_title, chunks[0], cfg_llm)
+    else:
+        note = _generate_chunked(lesson_title, chunks, cfg_llm)
+    validate_note_content(note)
+    return note
 
 
 # ---------------------------------------------------------------------------

@@ -69,9 +69,10 @@ def mock_notes_success(
     monkeypatch.setattr(
         cli_module, "check_ollama_dependencies", lambda base_url, model: []
     )
+    valid_note = "# Nota fake\n\n" + "Conteudo fake da aula para testes. " * 8
     monkeypatch.setattr(
         "aulaforge.checkpoints.generate_lesson_note",
-        lambda title, text, cfg_llm: "# nota fake",
+        lambda title, text, cfg_llm: valid_note,
     )
     return mock_transcription_success
 

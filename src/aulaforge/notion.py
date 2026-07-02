@@ -20,7 +20,7 @@ from typing import Any
 from aulaforge import notion_client
 from aulaforge.config import NotionConfig
 from aulaforge.models import Course, Lesson, NotionLessonInfo, NotionPageInfo
-from aulaforge.notes import NOTES_FILENAME
+from aulaforge.notes import NOTE_MIN_CHARS, NOTES_FILENAME
 
 logger = logging.getLogger("aulaforge.notion")
 
@@ -129,11 +129,20 @@ def get_note_for_sync(lesson: Lesson) -> str | None:
     Returns None if `09_ANOTACAO_NOTION.md` doesn't exist yet (Phase 3
     hasn't run or failed for this lesson), so callers can skip without
     treating it as a Notion-step failure.
+
+    Raises RuntimeError when the file exists but contains less than
+    NOTE_MIN_CHARS of useful content — empty notes must not be synced.
     """
     note_path = lesson.output_dir / NOTES_FILENAME
     if not note_path.exists():
         return None
-    return note_path.read_text(encoding="utf-8")
+    content = note_path.read_text(encoding="utf-8")
+    if len(content.strip()) < NOTE_MIN_CHARS:
+        raise RuntimeError(
+            "Anotacao esta vazia ou curta demais; gere novamente a etapa "
+            "notes antes de sincronizar com o Notion."
+        )
+    return content
 
 
 def compute_notion_input_hash(note_content: str, database_ref: str) -> str:

@@ -165,8 +165,36 @@ def test_get_note_for_sync_reads_existing_file(tmp_path: Path) -> None:
     course = _make_course(tmp_path)
     lesson = course.lessons[0]
     lesson.output_dir.mkdir(parents=True)
-    (lesson.output_dir / NOTES_FILENAME).write_text("# Aula 1\nconteudo", encoding="utf-8")
-    assert notion_mod.get_note_for_sync(lesson) == "# Aula 1\nconteudo"
+    content = "# Aula 1\n\n" + "Conteudo da aula. " * 15
+    (lesson.output_dir / NOTES_FILENAME).write_text(content, encoding="utf-8")
+    assert notion_mod.get_note_for_sync(lesson) == content
+
+
+def test_get_note_for_sync_raises_on_empty_file(tmp_path: Path) -> None:
+    course = _make_course(tmp_path)
+    lesson = course.lessons[0]
+    lesson.output_dir.mkdir(parents=True)
+    (lesson.output_dir / NOTES_FILENAME).write_text("", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="notes antes de sincronizar"):
+        notion_mod.get_note_for_sync(lesson)
+
+
+def test_get_note_for_sync_raises_on_short_content(tmp_path: Path) -> None:
+    course = _make_course(tmp_path)
+    lesson = course.lessons[0]
+    lesson.output_dir.mkdir(parents=True)
+    (lesson.output_dir / NOTES_FILENAME).write_text("# Aula\nconteudo curto", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="notes antes de sincronizar"):
+        notion_mod.get_note_for_sync(lesson)
+
+
+def test_get_note_for_sync_raises_on_whitespace_only(tmp_path: Path) -> None:
+    course = _make_course(tmp_path)
+    lesson = course.lessons[0]
+    lesson.output_dir.mkdir(parents=True)
+    (lesson.output_dir / NOTES_FILENAME).write_text("   \n\n  ", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        notion_mod.get_note_for_sync(lesson)
 
 
 # ---------------------------------------------------------------------------

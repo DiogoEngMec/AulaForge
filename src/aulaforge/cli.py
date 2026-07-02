@@ -393,93 +393,103 @@ def process_course(
         if not (cfg.notion.enabled and cfg.notion.auto_send):
             lesson_entries[NOTION_STEP] = record_notion_skipped_disabled(lesson, notion_started_at)
         else:
-            note_content = get_note_for_sync(lesson)
-
-            if note_content is None:
-                # Notes prerequisite is absent — not a notion processing
-                # failure; the notes step already explains why.
-                lesson_entries[NOTION_STEP] = record_notion_skipped_no_notes(
-                    lesson, notion_started_at
+            try:
+                note_content = get_note_for_sync(lesson)
+            except RuntimeError as exc:
+                lesson_entries[NOTION_STEP] = record_failed_step(
+                    lesson, NOTION_STEP, notion_started_at, exc
                 )
+                had_processing_failure = True
+                if not cfg.processing.continue_on_error:
+                    entries[lesson.slug] = lesson_entries
+                    write_batch_summary(course, entries)
+                    raise
             else:
-                # Fast offline pre-check: skip without any HTTP call if the
-                # local cache (NOTION_PAGE_INFO.json + processing_log.json)
-                # proves nothing changed. Mirrors the Ollama pattern where
-                # check_ollama_dependencies is only called if work is needed.
-                can_skip_offline, trial_hash, _ = can_skip_notion_without_network(
-                    lesson,
-                    course.output_path,
-                    note_content,
-                    force=effective_force,
-                    configured_database_id=cfg.notion.database_id,
-                )
-                if can_skip_offline and trial_hash is not None:
-                    lesson_entries[NOTION_STEP] = record_skipped_notion(
-                        lesson, trial_hash, notion_started_at
+                if note_content is None:
+                    # Notes prerequisite is absent — not a notion processing
+                    # failure; the notes step already explains why.
+                    lesson_entries[NOTION_STEP] = record_notion_skipped_no_notes(
+                        lesson, notion_started_at
                     )
                 else:
-                    # At least this lesson needs sync: check dependencies
-                    # lazily (at most once per batch run).
-                    if notion_availability is None:
-                        notion_availability = check_notion_dependencies(cfg.notion)
-
-                    if notion_availability.errors:
-                        lesson_entries[NOTION_STEP] = record_failed_step(
-                            lesson,
-                            NOTION_STEP,
-                            notion_started_at,
-                            RuntimeError("; ".join(notion_availability.errors)),
+                    # Fast offline pre-check: skip without any HTTP call if the
+                    # local cache (NOTION_PAGE_INFO.json + processing_log.json)
+                    # proves nothing changed. Mirrors the Ollama pattern where
+                    # check_ollama_dependencies is only called if work is needed.
+                    can_skip_offline, trial_hash, _ = can_skip_notion_without_network(
+                        lesson,
+                        course.output_path,
+                        note_content,
+                        force=effective_force,
+                        configured_database_id=cfg.notion.database_id,
+                    )
+                    if can_skip_offline and trial_hash is not None:
+                        lesson_entries[NOTION_STEP] = record_skipped_notion(
+                            lesson, trial_hash, notion_started_at
                         )
-                        had_dependency_failure = True
                     else:
-                        token = notion_availability.token
-                        database_id = notion_availability.database_id
-                        assert token is not None and database_id is not None, (
-                            "check_notion_dependencies must populate token/database_id "
-                            "whenever it returns no errors"
-                        )
-                        notion_hash = compute_notion_input_hash(note_content, database_id)
+                        # At least this lesson needs sync: check dependencies
+                        # lazily (at most once per batch run).
+                        if notion_availability is None:
+                            notion_availability = check_notion_dependencies(cfg.notion)
 
-                        try:
-                            needs_notion = needs_notion_processing(
-                                lesson, course.output_path, notion_hash, force=effective_force
-                            )
-                        except Exception as exc:
+                        if notion_availability.errors:
                             lesson_entries[NOTION_STEP] = record_failed_step(
-                                lesson, NOTION_STEP, notion_started_at, exc
+                                lesson,
+                                NOTION_STEP,
+                                notion_started_at,
+                                RuntimeError("; ".join(notion_availability.errors)),
                             )
-                            entries[lesson.slug] = lesson_entries
-                            had_processing_failure = True
-                            if not cfg.processing.continue_on_error:
-                                write_batch_summary(course, entries)
-                                raise
-                            continue
-
-                        if not needs_notion:
-                            lesson_entries[NOTION_STEP] = record_skipped_notion(
-                                lesson, notion_hash, notion_started_at
-                            )
+                            had_dependency_failure = True
                         else:
+                            token = notion_availability.token
+                            database_id = notion_availability.database_id
+                            assert token is not None and database_id is not None, (
+                                "check_notion_dependencies must populate token/database_id "
+                                "whenever it returns no errors"
+                            )
+                            notion_hash = compute_notion_input_hash(note_content, database_id)
+
                             try:
-                                _, notion_entry = process_lesson_notion(
-                                    course,
-                                    lesson,
-                                    note_content,
-                                    notion_hash,
-                                    cfg.notion,
-                                    token,
-                                    database_id,
+                                needs_notion = needs_notion_processing(
+                                    lesson, course.output_path, notion_hash, force=effective_force
                                 )
-                                lesson_entries[NOTION_STEP] = notion_entry
                             except Exception as exc:
                                 lesson_entries[NOTION_STEP] = record_failed_step(
                                     lesson, NOTION_STEP, notion_started_at, exc
                                 )
+                                entries[lesson.slug] = lesson_entries
                                 had_processing_failure = True
                                 if not cfg.processing.continue_on_error:
-                                    entries[lesson.slug] = lesson_entries
                                     write_batch_summary(course, entries)
                                     raise
+                                continue
+
+                            if not needs_notion:
+                                lesson_entries[NOTION_STEP] = record_skipped_notion(
+                                    lesson, notion_hash, notion_started_at
+                                )
+                            else:
+                                try:
+                                    _, notion_entry = process_lesson_notion(
+                                        course,
+                                        lesson,
+                                        note_content,
+                                        notion_hash,
+                                        cfg.notion,
+                                        token,
+                                        database_id,
+                                    )
+                                    lesson_entries[NOTION_STEP] = notion_entry
+                                except Exception as exc:
+                                    lesson_entries[NOTION_STEP] = record_failed_step(
+                                        lesson, NOTION_STEP, notion_started_at, exc
+                                    )
+                                    had_processing_failure = True
+                                    if not cfg.processing.continue_on_error:
+                                        entries[lesson.slug] = lesson_entries
+                                        write_batch_summary(course, entries)
+                                        raise
 
         # --- Phase 5: OCR ---
         ocr_started_at = datetime.now()

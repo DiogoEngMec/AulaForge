@@ -30,7 +30,7 @@ Para começar, edite apenas o modelo do Whisper (mais rápido para testes):
 
 ```yaml
 transcription:
-  model: "base"   # tiny = mais rápido | medium = melhor qualidade
+  model: "base" # tiny = mais rápido | medium = melhor qualidade
 ```
 
 > `aulaforge.yaml` é local e está no `.gitignore`. Não será commitado.
@@ -57,7 +57,12 @@ O AulaForge detecta o número da aula pelo nome do arquivo e ordena automaticame
 ## Passo 4 — Processar
 
 ```powershell
-aulaforge process-course "C:\Aulas\MeuCurso" --config aulaforge.yaml
+cd "C:\Projetos Claude Code\AulaForge"
+.\.venv\Scripts\Activate.ps1
+
+Copy-Item CONFIG_EXAMPLE.yaml aulaforge.yaml
+
+aulaforge process-course "C:\Aulas\NomeDoCurso" --config aulaforge.yaml
 ```
 
 Ao terminar, você verá no console:

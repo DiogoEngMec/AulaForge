@@ -1091,3 +1091,42 @@ def test_notes_retry_succeeds_on_last_attempt(
 
     assert result.exit_code == 0, result.output
     assert call_count["n"] == 3  # 2 failures + 1 success = retry_attempts calls
+
+
+# ── dotenv loading ─────────────────────────────────────────────────────────────
+
+
+def test_load_app_env_sets_token_from_dotenv_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Um .env com NOTION_TOKEN é carregado quando a variável não está no ambiente."""
+    import os
+
+    from aulaforge.cli import load_app_env
+
+    dotenv_file = tmp_path / ".env"
+    dotenv_file.write_text("NOTION_TOKEN=test_sentinel_from_dotenv\n", encoding="utf-8")
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+
+    load_app_env(dotenv_path=dotenv_file)
+
+    assert os.environ.get("NOTION_TOKEN") == "test_sentinel_from_dotenv"
+
+
+def test_load_app_env_does_not_override_existing_env_var(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Variável já definida no ambiente tem prioridade sobre o .env (override=False)."""
+    import os
+
+    from aulaforge.cli import load_app_env
+
+    monkeypatch.setenv("NOTION_TOKEN", "from_system_env")
+    dotenv_file = tmp_path / ".env"
+    dotenv_file.write_text("NOTION_TOKEN=from_dotenv_file\n", encoding="utf-8")
+
+    load_app_env(dotenv_path=dotenv_file)
+
+    assert os.environ.get("NOTION_TOKEN") == "from_system_env"

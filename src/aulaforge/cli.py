@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import typer
+from dotenv import load_dotenv
 from rich.console import Console
 
 from aulaforge.checkpoints import (
@@ -85,6 +86,12 @@ app = typer.Typer(
 )
 console = Console()
 
+
+def load_app_env(dotenv_path: Path | None = None) -> None:
+    """Carrega variáveis de .env sem sobrescrever variáveis já definidas no ambiente."""
+    load_dotenv(dotenv_path=dotenv_path, override=False)
+
+
 # Exit codes: 0 = tudo certo; 1 = alguma etapa falhou por motivo de
 # processamento real; 2 = nenhuma falha de processamento ocorreu, mas a
 # transcricao nao pode rodar por dependencia local ausente (ffmpeg/whisper).
@@ -95,6 +102,7 @@ DEPENDENCY_MISSING_EXIT_CODE = 2
 @app.callback()
 def main() -> None:
     """AulaForge: processa cursos em video localmente, por fases."""
+    load_app_env()
     ensure_utf8_console()
 
 

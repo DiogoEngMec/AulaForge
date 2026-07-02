@@ -24,6 +24,9 @@ transcription:
 ocr:
   enabled: false              # OCR pode ser lento; opt-in manual
   engine: "local"
+  # tesseract_cmd: "C:/Program Files/Tesseract-OCR/tesseract.exe"
+  #   Caminho explícito ao executável do Tesseract. Se omitido, o AulaForge
+  #   tenta: (1) tesseract no PATH, (2) caminhos padrão do Windows.
   frame_interval_seconds: 5  # 1 frame a cada N segundos
   lang: "por+eng"             # idiomas Tesseract (use + para múltiplos)
   min_text_change_chars: 30   # chars novos mínimos para não deduplicar frame

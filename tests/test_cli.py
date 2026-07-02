@@ -542,7 +542,7 @@ def mock_ocr_success(
     """Make the OCR path succeed without real FFmpeg or Tesseract."""
     from aulaforge.models import OcrFrameResult, StepLogEntry
 
-    monkeypatch.setattr(cli_module, "check_ocr_dependencies", lambda lang: [])
+    monkeypatch.setattr(cli_module, "check_ocr_dependencies", lambda lang, cfg=None: [])
 
     fake_result = OcrFrameResult(
         timestamp="00:00:00",
@@ -592,7 +592,7 @@ def test_ocr_skipped_when_disabled(
     """With ocr.enabled=false (default), check_ocr_dependencies must never be called."""
     config_file = _write_config(tmp_path, output_root)
 
-    def boom(lang: str) -> list[str]:
+    def boom(lang: str, cfg: object = None) -> list[str]:
         raise AssertionError("check_ocr_dependencies nao deve ser chamado quando disabled")
 
     monkeypatch.setattr(cli_module, "check_ocr_dependencies", boom)
@@ -613,7 +613,7 @@ def test_ocr_dependency_missing_gives_exit_code_2(
     monkeypatch.setattr(
         cli_module,
         "check_ocr_dependencies",
-        lambda lang: ["tesseract nao encontrado no PATH"],
+        lambda lang, cfg=None: ["tesseract nao encontrado no PATH"],
     )
 
     result = runner.invoke(app, ["process-course", str(course_dir), "--config", str(config_file)])
@@ -668,7 +668,7 @@ def test_ocr_skipped_on_second_run_when_nothing_changed(
     assert result1.exit_code == 0, result1.output
 
     # Second run: nothing changed; check_ocr_dependencies must NOT be called
-    def boom(lang: str) -> list[str]:
+    def boom(lang: str, cfg: object = None) -> list[str]:
         raise AssertionError("check_ocr_dependencies nao deve ser chamado no segundo run")
 
     monkeypatch.setattr(cli_module, "check_ocr_dependencies", boom)
@@ -690,7 +690,7 @@ def test_ocr_failure_in_one_lesson_does_not_abort_batch(
         f'project:\n  output_dir: "{output_root.as_posix()}"\nocr:\n  enabled: true\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(cli_module, "check_ocr_dependencies", lambda lang: [])
+    monkeypatch.setattr(cli_module, "check_ocr_dependencies", lambda lang, cfg=None: [])
 
     call_count = {"n": 0}
 

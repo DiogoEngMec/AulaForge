@@ -508,7 +508,7 @@ def process_course(
                 )
             else:
                 if ocr_dependency_errors is None:
-                    ocr_dependency_errors = check_ocr_dependencies(cfg.ocr.lang)
+                    ocr_dependency_errors = check_ocr_dependencies(cfg.ocr.lang, cfg.ocr)
 
                 if ocr_dependency_errors:
                     lesson_entries[OCR_STEP] = record_failed_step(

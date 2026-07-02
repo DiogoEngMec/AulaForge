@@ -11,18 +11,21 @@ import aulaforge.ocr as ocr_module
 from aulaforge.config import OcrConfig
 from aulaforge.models import OcrFrameResult
 from aulaforge.ocr import (
+    OcrProcessingError,
     _apply_save_policy,
     _text_change_count,
     assess_confidence,
     check_ocr_dependencies,
     classify_screen_type,
     compute_ocr_input_hash,
+    configure_tesseract,
     dedup_results,
     detect_code_blocks,
     detect_terminal_commands,
     is_pillow_available,
     is_pytesseract_available,
     is_tesseract_available,
+    resolve_tesseract_cmd,
     run_ocr,
     write_codes_md,
     write_commands_md,
@@ -67,10 +70,10 @@ def test_is_pillow_available_true(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _patch_all_available(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ocr_module, "is_ffmpeg_available", lambda: True)
-    monkeypatch.setattr(ocr_module, "is_tesseract_available", lambda: True)
+    monkeypatch.setattr(ocr_module, "resolve_tesseract_cmd", lambda cfg: "/usr/bin/tesseract")
     monkeypatch.setattr(ocr_module, "is_pytesseract_available", lambda: True)
     monkeypatch.setattr(ocr_module, "is_pillow_available", lambda: True)
-    monkeypatch.setattr(ocr_module, "_check_tesseract_langs", lambda lang: [])
+    monkeypatch.setattr(ocr_module, "_check_tesseract_langs", lambda lang, cmd="tesseract": [])
 
 
 def test_check_ocr_dependencies_empty_when_all_available(
@@ -93,7 +96,7 @@ def test_check_ocr_dependencies_reports_missing_tesseract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_all_available(monkeypatch)
-    monkeypatch.setattr(ocr_module, "is_tesseract_available", lambda: False)
+    monkeypatch.setattr(ocr_module, "resolve_tesseract_cmd", lambda cfg: None)
     errors = check_ocr_dependencies()
     assert any("tesseract" in e for e in errors)
 
@@ -121,12 +124,12 @@ def test_check_ocr_dependencies_skips_lang_check_when_tesseract_absent(
 ) -> None:
     lang_check_called = {"called": False}
 
-    def _lang_spy(lang: str) -> list[str]:
+    def _lang_spy(lang: str, cmd: str = "tesseract") -> list[str]:
         lang_check_called["called"] = True
         return []
 
     _patch_all_available(monkeypatch)
-    monkeypatch.setattr(ocr_module, "is_tesseract_available", lambda: False)
+    monkeypatch.setattr(ocr_module, "resolve_tesseract_cmd", lambda cfg: None)
     monkeypatch.setattr(ocr_module, "_check_tesseract_langs", _lang_spy)
     check_ocr_dependencies()
     assert not lang_check_called["called"]
@@ -502,3 +505,77 @@ def test_run_ocr_returns_stripped_text(
     monkeypatch.setattr(builtins, "__import__", _mock_import)
     result = run_ocr(frame, lang="por+eng")
     assert result == "mocked OCR text"
+
+
+# ── resolve_tesseract_cmd ─────────────────────────────────────────────────────
+
+
+def test_resolve_tesseract_cmd_uses_explicit_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cfg.tesseract_cmd tem prioridade absoluta sobre PATH e fallbacks."""
+    monkeypatch.setattr(ocr_module.shutil, "which", lambda name: "/other/tesseract")
+    cfg = OcrConfig(tesseract_cmd="/explicit/path/tesseract.exe")
+    assert resolve_tesseract_cmd(cfg) == "/explicit/path/tesseract.exe"
+
+
+def test_resolve_tesseract_cmd_uses_path_when_no_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sem tesseract_cmd na config, usa o binário encontrado no PATH."""
+    monkeypatch.setattr(ocr_module.shutil, "which", lambda name: "/usr/bin/tesseract")
+    assert resolve_tesseract_cmd(OcrConfig()) == "/usr/bin/tesseract"
+
+
+def test_resolve_tesseract_cmd_uses_windows_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Quando PATH não tem tesseract, usa caminhos padrão do Windows se o arquivo existir."""
+    fake_binary = tmp_path / "tesseract.exe"
+    fake_binary.write_bytes(b"fake")
+
+    monkeypatch.setattr(ocr_module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ocr_module, "_WINDOWS_TESSERACT_FALLBACKS", [str(fake_binary)])
+
+    assert resolve_tesseract_cmd(OcrConfig()) == str(fake_binary)
+
+
+def test_resolve_tesseract_cmd_returns_none_when_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retorna None quando tesseract não está no config, PATH ou fallbacks."""
+    monkeypatch.setattr(ocr_module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ocr_module, "_WINDOWS_TESSERACT_FALLBACKS", [])
+
+    assert resolve_tesseract_cmd(OcrConfig()) is None
+
+
+# ── configure_tesseract ───────────────────────────────────────────────────────
+
+
+def test_configure_tesseract_raises_when_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Quando resolve_tesseract_cmd retorna None, levanta OcrProcessingError."""
+    monkeypatch.setattr(ocr_module, "resolve_tesseract_cmd", lambda cfg: None)
+    with pytest.raises(OcrProcessingError, match="tesseract"):
+        configure_tesseract(OcrConfig())
+
+
+def test_configure_tesseract_sets_pytesseract_cmd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Quando resolve retorna um caminho, pytesseract.tesseract_cmd é configurado."""
+    import sys
+    import types
+
+    fake_inner = types.SimpleNamespace(tesseract_cmd="tesseract")
+    fake_pytesseract = types.SimpleNamespace(pytesseract=fake_inner)
+
+    monkeypatch.setattr(ocr_module, "resolve_tesseract_cmd", lambda cfg: "/resolved/tesseract")
+    monkeypatch.setitem(sys.modules, "pytesseract", fake_pytesseract)
+
+    configure_tesseract(OcrConfig())
+
+    assert fake_inner.tesseract_cmd == "/resolved/tesseract"

@@ -77,6 +77,59 @@ _MEDIUM_CONFIDENCE_MIN = 30
 
 # ── Dependency detection ──────────────────────────────────────────────────────
 
+_WINDOWS_TESSERACT_FALLBACKS: list[str] = [
+    "C:/Program Files/Tesseract-OCR/tesseract.exe",
+    "C:/Program Files (x86)/Tesseract-OCR/tesseract.exe",
+]
+
+
+def resolve_tesseract_cmd(cfg: OcrConfig) -> str | None:
+    """Resolve the Tesseract executable path using the configured priority chain.
+
+    Priority:
+    1. ``cfg.tesseract_cmd`` — explicit path set in aulaforge.yaml;
+    2. ``shutil.which("tesseract")`` — binary found on PATH;
+    3. ``_WINDOWS_TESSERACT_FALLBACKS`` — common Windows install locations.
+
+    Returns the resolved path string, or ``None`` if Tesseract is not found.
+    """
+    if cfg.tesseract_cmd is not None:
+        return cfg.tesseract_cmd
+
+    from_path = shutil.which("tesseract")
+    if from_path is not None:
+        return from_path
+
+    for fallback in _WINDOWS_TESSERACT_FALLBACKS:
+        if Path(fallback).is_file():
+            return fallback
+
+    return None
+
+
+def configure_tesseract(cfg: OcrConfig) -> None:
+    """Set ``pytesseract.pytesseract.tesseract_cmd`` to the resolved Tesseract path.
+
+    Raises ``OcrProcessingError`` if Tesseract cannot be found via any of the
+    configured resolution methods.  When pytesseract is not installed the
+    configuration step is silently skipped — the missing package will be caught
+    by ``check_ocr_dependencies`` before any OCR is attempted.
+    """
+    resolved = resolve_tesseract_cmd(cfg)
+    if resolved is None:
+        raise OcrProcessingError(
+            "tesseract nao encontrado. "
+            "Instale em https://github.com/UB-Mannheim/tesseract/wiki "
+            "e adicione ao PATH, ou defina ocr.tesseract_cmd no aulaforge.yaml com o "
+            "caminho completo (ex.: C:/Program Files/Tesseract-OCR/tesseract.exe)."
+        )
+    try:
+        import pytesseract
+
+        pytesseract.pytesseract.tesseract_cmd = resolved
+    except ImportError:
+        pass
+
 
 def is_tesseract_available() -> bool:
     """True if the ``tesseract`` binary is found on PATH."""
@@ -93,18 +146,18 @@ def is_pillow_available() -> bool:
     return importlib.util.find_spec("PIL") is not None
 
 
-def _check_tesseract_langs(lang: str) -> list[str]:
+def _check_tesseract_langs(lang: str, tesseract_cmd: str = "tesseract") -> list[str]:
     """Return error messages for Tesseract language packs that are missing.
 
-    Runs ``tesseract --list-langs`` and compares against the ``+``-separated
-    list in *lang* (e.g. ``"por+eng"``).  Returns ``[]`` if the check cannot
-    be run (missing binary, subprocess error) — the caller treats this as a
-    best-effort check.
+    Runs ``<tesseract_cmd> --list-langs`` and compares against the
+    ``+``-separated list in *lang* (e.g. ``"por+eng"``).  Returns ``[]`` if
+    the check cannot be run (missing binary, subprocess error) — the caller
+    treats this as a best-effort check.
     """
     required = {part.strip() for part in lang.split("+") if part.strip()}
     try:
         result = subprocess.run(
-            ["tesseract", "--list-langs"],
+            [tesseract_cmd, "--list-langs"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -126,11 +179,15 @@ def _check_tesseract_langs(lang: str) -> list[str]:
     return []
 
 
-def check_ocr_dependencies(lang: str = "por+eng") -> list[str]:
+def check_ocr_dependencies(lang: str = "por+eng", cfg: OcrConfig | None = None) -> list[str]:
     """Return a list of error messages for missing OCR dependencies.
 
     An empty list means everything required by Phase 5 is present.
     Called lazily in the CLI — only when at least one lesson needs OCR.
+
+    *cfg* is used to resolve the Tesseract executable via ``resolve_tesseract_cmd``
+    (config path → PATH → Windows fallback).  When *cfg* is ``None`` a default
+    ``OcrConfig`` is used, which means only PATH and Windows fallbacks are tried.
     """
     errors: list[str] = []
 
@@ -139,11 +196,15 @@ def check_ocr_dependencies(lang: str = "por+eng") -> list[str]:
             "ffmpeg nao encontrado no PATH. "
             "Instale em https://ffmpeg.org/download.html e adicione ao PATH."
         )
-    if not is_tesseract_available():
+
+    resolved = resolve_tesseract_cmd(cfg if cfg is not None else OcrConfig())
+    if resolved is None:
         errors.append(
-            "tesseract nao encontrado no PATH. "
-            "Windows: https://github.com/UB-Mannheim/tesseract/wiki"
+            "tesseract nao encontrado. "
+            "Windows: https://github.com/UB-Mannheim/tesseract/wiki — instale e "
+            "adicione ao PATH, ou defina ocr.tesseract_cmd no aulaforge.yaml."
         )
+
     if not is_pytesseract_available():
         errors.append(
             "pytesseract nao instalado. Execute: pip install 'aulaforge[ocr]'"
@@ -153,9 +214,9 @@ def check_ocr_dependencies(lang: str = "por+eng") -> list[str]:
             "Pillow nao instalado. Execute: pip install 'aulaforge[ocr]'"
         )
 
-    # Best-effort language pack check (only when tesseract binary is present)
-    if is_tesseract_available():
-        errors.extend(_check_tesseract_langs(lang))
+    # Best-effort language pack check (only when tesseract binary is resolved)
+    if resolved is not None:
+        errors.extend(_check_tesseract_langs(lang, resolved))
 
     return errors
 
@@ -521,6 +582,8 @@ def process_lesson_ocr_frames(
     (``checkpoints.process_lesson_ocr``) does that so the writing and log
     recording remain co-located.
     """
+    configure_tesseract(cfg)
+
     from aulaforge.video_frames import FRAMES_DIR_NAME, extract_frames
 
     frames_dir = output_dir / FRAMES_DIR_NAME

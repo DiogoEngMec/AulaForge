@@ -107,6 +107,23 @@ output/MeuCurso/
 
 ---
 
+## (Opcional) OCR — Tesseract no Windows
+
+Para usar OCR (`ocr.enabled: true`), instale o Tesseract:
+[github.com/UB-Mannheim/tesseract/wiki](https://github.com/UB-Mannheim/tesseract/wiki)
+
+Se o Tesseract não estiver no PATH, adicione o caminho no `aulaforge.yaml`:
+
+```yaml
+ocr:
+  enabled: true
+  tesseract_cmd: "C:/Program Files/Tesseract-OCR/tesseract.exe"
+```
+
+O AulaForge também tenta detectar o Tesseract nos caminhos padrão do Windows automaticamente.
+
+---
+
 ## (Opcional) Passo 6 — Sincronizar com Notion
 
 1. Defina o token do Notion:

@@ -62,6 +62,7 @@ class OcrConfig(BaseModel):
 
     enabled: bool = False
     engine: str = "local"
+    tesseract_cmd: str | None = None
     frame_interval_seconds: int = 5
     lang: str = "por+eng"
     min_text_change_chars: int = 30
